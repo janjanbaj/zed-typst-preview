@@ -1,0 +1,18 @@
+# Build outputs and downloaded grammars
+/target/
+/extension.wasm
+/grammars/
+/wasi_snapshot_preview1.reactor.wasm
+/dist/
+
+# Local reference checkout and temporary export artifacts
+/typst-preview.nvim/
+/file:/
+
+# Machine-specific state and credentials
+.DS_Store
+.env
+.env.*
+*.log
+.codex/
+.agents/

@@ -1,0 +1,27 @@
+id = "zed-typst-preview"
+name = "Typst Preview"
+version = "0.2.0"
+schema_version = 1
+description = "Live browser previews for Typst and Markdown with native Typst math"
+languages = ["languages/typst"]
+
+[lib]
+kind = "Rust"
+version = "0.7.0"
+
+[grammars.typst]
+repository = "https://github.com/uben0/tree-sitter-typst"
+rev = "abe60cbed7986ee475d93f816c1be287f220c5d8"
+
+[language_servers.tinymist-preview]
+name = "Tinymist Preview"
+language = "Typst"
+
+[language_servers.markdown-typst-preview]
+name = "Markdown Typst Preview"
+languages = ["Markdown"]
+
+[[capabilities]]
+kind = "download_file"
+host = "*"
+path = ["**"]
