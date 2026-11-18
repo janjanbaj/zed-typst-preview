@@ -222,6 +222,8 @@ permission to bind a loopback port. They use a fake Tinymist and do not open a b
 
 [Architecture and maintenance notes](HANDOFF.md) explain the implementation.
 [Work log](docs/WORK_LOG.md) records changes and validation.
+[Native Rust proxy handoff](docs/rust-proxy/README.md) contains the proposed
+migration contracts, implementation tasks, and adversarial review.
 
 ## Sharing and attribution
 

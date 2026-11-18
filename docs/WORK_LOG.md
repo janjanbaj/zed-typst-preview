@@ -74,3 +74,11 @@ Replaced machine-specific handoff notes with portable architecture documentation
 Removed placeholder author/repository identity from the extension manifest. Added
 source-sharing exclusions and preserved the MIT notice for the Typst grammar queries.
 Local compiled artifacts and reference checkouts are not included in the source archive.
+
+
+## Native Rust proxy planning
+
+- Froze the working extension at `0a366d8` on `main`; created `rust-proxy` for the migration.
+- Added the [handoff package](rust-proxy/README.md): architecture, Rust interfaces, wire contracts, scoped task packets, tests, benchmark gates, and adversarial audit. No native proxy implementation or default launcher change was made.
+- Two fake-server probes confirmed baseline request-ID collision and close/reopen stale-completion risks; the native contract requires fixes and regressions.
+- Baseline checks passed: nine Node tests, Node syntax, diff whitespace, and release WASI build. No changes were pushed.
