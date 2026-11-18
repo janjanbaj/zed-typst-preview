@@ -8,7 +8,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../proxy.mjs', import.meta.url), 'utf8');
 const helpers = source.slice(source.indexOf('function typstString'), source.indexOf("if (!tinymistArgs.includes"));
-const { markdownTypst, editFraction } = vm.runInNewContext(helpers + ';({markdownTypst, editFraction})', { URL });
+const { markdownTypst, editFraction, markdownHeader, typstCompletionRegion, completionProjection, markdownCompletions, completionRangeInside, positionAtOffset, positionOffset } = vm.runInNewContext(helpers + ';({markdownTypst, editFraction, markdownHeader, typstCompletionRegion, completionProjection, markdownCompletions, completionRangeInside, positionAtOffset, positionOffset})', { URL });
 
 test('wrapper preserves Markdown escapes and selects native Typst math', () => {
   const text = '# Heading\n$frac(1, 2)$ and \\u1234 "quoted" 😀\r\n\t\0';
@@ -20,12 +20,118 @@ test('wrapper preserves Markdown escapes and selects native Typst math', () => {
   assert.ok(wrapper.includes('\\u{0}'));
 });
 
+test('a leading triple-quoted header styles the document and preserves code blocks', () => {
+  const preamble = '#let body-size = 15pt\n#set text(size: body-size)\n#set par(leading: 0.8em)\n';
+  const body = '# Heading\n\nA fraction: $frac(1, 2)$.\n\n```typst\n#set text(size: 30pt)\n```\n';
+  const text = '"""\n' + preamble + '"""\n' + body;
+  const header = markdownHeader(text);
+  assert.equal(header.preamble, preamble);
+  assert.equal(header.markdown, body);
+  const wrapper = markdownTypst(text, 7);
+  assert.ok(wrapper.indexOf(preamble) < wrapper.indexOf('#cmarker.render('));
+  assert.ok(!wrapper.includes('"""'));
+  assert.ok(wrapper.includes('```typst'));
+  assert.ok(wrapper.includes('version: 7'));
+});
+
+test('header parsing handles CRLF, a BOM, empty headers, and ordinary code fences', () => {
+  const windows = '\uFEFF\r\n"""\r\n#set text(size: 14pt)\r\n"""\r\nBody';
+  assert.equal(markdownHeader(windows).preamble, '#set text(size: 14pt)\r\n');
+  assert.equal(markdownHeader(windows).markdown, 'Body');
+  assert.equal(markdownHeader('"""\n"""').markdown, '');
+  for (const text of [
+    '"""\n#set text(size: 14pt)',
+    '```typst\n#set text(size: 14pt)\n```',
+    '```typst-config\n#set text(size: 14pt)\n```',
+    '# Heading\n\n"""\n#set text(size: 14pt)\n"""',
+    '"""extra\n#set text(size: 14pt)\n"""',
+    '"""Q\n#set text(size: 14pt)\n"""Q'
+  ]) {
+    assert.equal(markdownHeader(text).preamble, '');
+    assert.equal(markdownHeader(text).markdown, text);
+  }
+});
+
 test('edit location follows the last change, including deletions and Unicode', () => {
   assert.equal(editFraction('abcdefghij', 'abXdefghij'), 0.3);
   assert.equal(editFraction('abcde', 'abde'), 0.5);
   assert.equal(editFraction('abc', ''), 0);
   assert.equal(editFraction('same', 'same'), null);
   assert.equal(editFraction('😀a tail', '😀b tail'), 3 / 8);
+});
+
+test('completion regions include unfinished headers and math, excluding prose and code', () => {
+  const region = marked => {
+    const offset = marked.indexOf('|');
+    const text = marked.replace('|', '');
+    return typstCompletionRegion(text, offset);
+  };
+  for (const text of ['"""\n#set te|\n"""\nBody', '"""\n#let si|', '\uFEFF\r\n"""\r\n#set te|']) {
+    assert.equal(region(text)?.kind, 'header');
+  }
+  for (const text of ['$|', '$$|', '$2 + fr|', '$fr|$', '$sq|', '$$\nma|\n$$', '$$\nfr|', '$text("cost $5") + sq|$']) {
+    assert.equal(region(text)?.kind, 'math');
+  }
+  for (const text of [
+    'Plain fr|', '\\$fr|', 'Cost $5 and $10|', '`$fr|$`',
+    '```typst\n$fr|$\n```', '~~~\n$fr|$\n~~~',
+    '> ```\n> $fr|$\n> ```', '- ```\n  $fr|$\n  ```',
+    '    $fr|$', '$x$ prose|', '$x$\nprose|',
+    '"""|\n#set text(size: 12pt)\n"""', '"""\n#set text(size: 12pt)\n"""|'
+  ]) assert.equal(region(text), null, text);
+});
+
+test('completion projections preserve UTF-16 positions and normalize display delimiters', () => {
+  const text = '😀 prose\r\n$$\r\nfrac(1, 2)\r\n$$';
+  const offset = text.indexOf('frac') + 2;
+  const region = typstCompletionRegion(text, offset);
+  const projected = completionProjection(text, region);
+  assert.equal(projected.length, text.length);
+  assert.equal(projected.slice(0, 8), '        ');
+  assert.equal(projected.slice(region.start, region.end), text.slice(region.start, region.end));
+  assert.equal(projected.slice(region.start - 2, region.start), '$ ');
+  assert.equal(projected.slice(region.end, region.end + 2), ' $');
+  assert.equal(positionOffset(projected, positionAtOffset(text, offset)), offset);
+  const incomplete = '$fr';
+  assert.equal(completionProjection(incomplete, typstCompletionRegion(incomplete, 3)), '$fr\n$');
+});
+
+test('completion edits stay inside the Typst region and strip generated-file actions', () => {
+  const text = 'Prose $fr$ tail';
+  const region = typstCompletionRegion(text, 9);
+  const context = { text, region };
+  const range = { start: { line: 0, character: 7 }, end: { line: 0, character: 9 } };
+  const outside = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+  const result = markdownCompletions({
+    itemDefaults: { editRange: range, insertTextFormat: 2 },
+    items: [
+      { label: 'frac', textEditText: 'frac(${1:a}, ${2:b})', data: { file: 'generated' }, command: { command: 'unsafe' } },
+      { label: 'wrong', textEdit: { range: outside, newText: 'bad' } },
+      { label: 'import', additionalTextEdits: [{ range: outside, newText: '#import' }] },
+      { label: 'replace', textEdit: { insert: range, replace: range, newText: 'frac' } }
+    ]
+  }, context);
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0].insertTextFormat, 2);
+  assert.equal(result.items[0].textEdit.newText, 'frac(${1:a}, ${2:b})');
+  assert.equal(result.items[0].data, undefined);
+  assert.equal(result.items[0].command, undefined);
+  assert.ok(completionRangeInside(result.items[1].textEdit.replace, context));
+});
+
+test('quoted font suggestions replace the header string without duplicating quotes', () => {
+  for (const tail of ['" )\n"""', '']) {
+    const text = '"""\n#set text(font: "New Co' + tail;
+    const position = { line: 1, character: 23 };
+    const context = { text, position, region: typstCompletionRegion(text, positionOffset(text, position)) };
+    const result = markdownCompletions([{ label: '"New Computer Modern"',
+      textEdit: { range: { start: position, end: position }, newText: '"New Computer Modern' }
+    }], context);
+    const edit = result.items[0].textEdit;
+    const updated = text.slice(0, positionOffset(text, edit.range.start)) + edit.newText + text.slice(positionOffset(text, edit.range.end));
+    assert.ok(updated.includes('font: "New Computer Modern"'));
+    assert.ok(!updated.includes('New Co"New'));
+  }
 });
 
 test('Markdown lifecycle is virtual, live, and preview-only', { timeout: 15000 }, async t => {
@@ -53,6 +159,14 @@ process.stdin.on('data', chunk => {
    const version=Number(/version: (\\d+)/.exec(text)[1]);
    const data=Buffer.from(JSON.stringify([{version,page:1,x:0,y:1000}])).toString('base64');
    setTimeout(()=>send({jsonrpc:'2.0',id:m.id,result:{data}}),60);
+  }
+  if (m.method === 'textDocument/completion') {
+   const pos=m.params.position;
+   const range={start:{line:pos.line,character:pos.character-2},end:pos};
+   setTimeout(()=>send({jsonrpc:'2.0',id:m.id,result:{items:[
+    {label:'frac',textEdit:{range,newText:'frac'},data:{generated:true},command:{command:'bad'}},
+    {label:'unsafe',textEdit:{range:{start:{line:0,character:0},end:{line:0,character:1}},newText:'bad'}}
+   ]}}),60);
   }
   if (m.method === 'textDocument/didOpen') {
    send({jsonrpc:'2.0',method:'textDocument/publishDiagnostics',params:{uri:m.params.textDocument.uri,diagnostics:[{message:'generated position'}]}});
@@ -90,6 +204,8 @@ process.stdin.on('data', chunk => {
   assert.equal(caps.definitionProvider,undefined);
   assert.equal(caps.documentFormattingProvider,undefined);
   assert.equal(caps.documentHighlightProvider,true);
+  assert.equal(caps.completionProvider.resolveProvider,false);
+  assert.ok(caps.completionProvider.triggerCharacters.includes('#'));
   assert.deepEqual(caps.executeCommandProvider.commands,['typst-preview.open']);
   const uri='file:///tmp/notes%20space.md';
   send({method:'textDocument/didOpen',params:{textDocument:{uri,languageId:'markdown',version:1,text:'😀 $x$\r\nnext'}}});
@@ -150,5 +266,31 @@ process.stdin.on('data', chunk => {
   send({method:'textDocument/didOpen',params:{textDocument:{uri,languageId:'markdown',version:5,text:'# Returned'}}});
   await new Promise(r=>setTimeout(r,150));
   assert.equal(recorded().filter(m=>m.params?.command==='tinymist.scrollPreview').length,1);
+  // Completion documents are separate from preview documents and edits map back unchanged.
+  send({method:'textDocument/didChange',params:{textDocument:{uri,version:6},contentChanges:[{text:'Some $fr$ text'}]}});
+  send({id:20,method:'textDocument/completion',params:{textDocument:{uri},position:{line:0,character:8}}});
+  await until(()=>messages.some(m=>m.id===20));
+  const answer=messages.find(m=>m.id===20).result;
+  assert.equal(answer.items.length,1);
+  assert.equal(answer.items[0].label,'frac');
+  assert.equal(answer.items[0].textEdit.range.start.character,6);
+  assert.equal(answer.items[0].data,undefined);
+  const completionRequest=recorded().find(m=>m.id===20);
+  assert.equal(completionRequest.params.textDocument.uri,uri+'.zed-completion.typ');
+  const completionOpen=recorded().find(m=>m.method==='textDocument/didOpen' && m.params.textDocument.uri.endsWith('.zed-completion.typ'));
+  assert.equal(completionOpen.params.textDocument.text,'     $fr$     ');
+  send({id:21,method:'textDocument/completion',params:{textDocument:{uri},position:{line:0,character:2}}});
+  await until(()=>messages.some(m=>m.id===21));
+  assert.equal(messages.find(m=>m.id===21).result,null);
+  assert.ok(!recorded().some(m=>m.id===21));
+
+  send({id:22,method:'textDocument/completion',params:{textDocument:{uri},position:{line:0,character:8}}});
+  await until(()=>recorded().some(m=>m.id===22));
+  send({method:'textDocument/didChange',params:{textDocument:{uri,version:7},contentChanges:[{text:'Updated $sq$'}]}});
+  await until(()=>messages.some(m=>m.id===22));
+  assert.equal(messages.find(m=>m.id===22).result,null);
+  send({method:'textDocument/didClose',params:{textDocument:{uri}}});
+  await until(()=>recorded().some(m=>m.method==='textDocument/didClose' && m.params.textDocument.uri.endsWith('.zed-completion.typ')));
+
 
 });

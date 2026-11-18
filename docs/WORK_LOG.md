@@ -36,6 +36,38 @@ This deliberately provides approximate scrolling rather than exact source mappin
 - The user confirmed basic live rendering. Subsequent appearance, switching, and
   scroll behavior remain available for manual UI testing.
 
+## Per-document styling
+
+Added an optional leading triple-quoted (`"""`) configuration header. Its hidden Typst preamble can
+use `#let`, `#set`, and `#show` for fonts, text size, line/paragraph spacing, and
+heading styling. All backtick code fences remain examples. Tests cover complete,
+incomplete, empty, BOM, and CRLF headers. The styled Markdown example compiled
+with the bundled Tinymist; UI validation is left to the user.
+
+## Embedded Typst suggestions
+
+Added completion capability to the Markdown server. Separate virtual Typst
+projections preserve source positions while exposing only the active header or
+math region to Tinymist. This works with unfinished delimiters. Prose/code are
+excluded, stale responses are rejected, and edits are restricted to that region.
+Font-name insertions inside partial strings are normalized for Tinymist 0.14.
+
+Automated tests cover region detection, projection offsets, snippet/edit handling,
+font replacement, stale replies, and virtual-document cleanup. Terminal checks
+against Tinymist 0.14.10 returned actual `frac`, `sqrt`, `vec`, `text`, header-variable,
+and font-name suggestions through the proxy. No browser UI was opened. Rendering
+and completion documents remain separate, with the preview manually focused.
+
+## Delimiter pairing
+
+Added reusable Markdown-scoped keybindings for `$`, `"`, `(`, `[`, and `{`.
+Each inserts a complete pair with the cursor at an interior tab stop and a final
+Tab stop after the closing sign. This avoids LSP cursor-placement limitations and
+native Markdown pairing restrictions before `$`. Existing shortcuts are preserved
+when installing locally. Pairing configuration is separate from the extension's
+language server and must be merged into the keymap by other users. JSON and snippet
+positions were checked; UI testing remains manual.
+
 ## Repository preparation
 
 Replaced machine-specific handoff notes with portable architecture documentation.

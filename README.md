@@ -17,6 +17,7 @@ Typst's layout; this does not modify Zed's built-in Markdown preview.
 - Light document colors, independent of the system's dark appearance.
 - One preview page per language-server session that follows document activity.
 - Approximate scrolling toward the latest Markdown edit, debounced by 200 ms.
+- Tinymist completions inside Markdown math and triple-quoted headers.
 - Browser reopening through editor code actions.
 - Cursor following and preview-to-source navigation for standalone Typst files.
 
@@ -50,7 +51,8 @@ it is not currently published to the Zed extension registry.
 ```
 
 Keep any other Markdown language servers you use. This extension's Markdown
-server supplies preview controls, not Markdown formatting or completions.
+server supplies preview controls and Typst completions in embedded regions;
+it does not format Markdown or suggest Typst names in ordinary prose.
 
 Zed provisions the Node.js runtime used by the proxy. Tinymist is downloaded
 when no configured or installed binary is found. The first Markdown compilation
@@ -90,6 +92,82 @@ To reopen a closed preview, keep the document active and use:
 The action title is prefixed with **Markdown Typst Preview** or **Typst Preview**.
 There is no separately registered top-level command-palette action. Preview ports
 are allocated dynamically, so a hardcoded browser task will not reliably work.
+
+## Per-document styling
+
+Put one complete triple-quoted (`"""`) header at the beginning of the Markdown file
+(before its heading; blank lines are allowed). It is removed from the rendered
+Markdown and evaluated as a Typst preamble:
+
+````markdown
+"""
+#let body-font = "New Computer Modern"
+#let body-size = 14pt
+#let line-gap = 0.8em
+#let paragraph-gap = 1.2em
+
+#set text(font: body-font, size: body-size)
+#set par(leading: line-gap, spacing: paragraph-gap)
+#show heading: set text(fill: navy)
+"""
+
+# My notes
+
+An inline fraction: $frac(1, 2)$.
+````
+
+`leading` sets the gap between lines; `spacing` sets the gap between paragraphs.
+`#let` defines values, and `#set` or `#show` applies them. These are ordinary Typst
+rules, so text size also affects equations. To select a math font separately, use
+`#show math.equation: set text(font: "New Computer Modern Math")`.
+Fonts must be available to Tinymist; missing fonts can fall back to another font.
+
+The header is executable Typst code, with the same file/package access as a
+Typst document. Only a leading triple-quoted header is extracted. Backtick code fences remain
+ordinary Markdown code blocks, including the former `typst-config` fence.
+Triple-quoted text later in the file is not executed.
+An unclosed header stays ordinary Markdown until closed; invalid Typst can leave
+the last successful preview visible. See [examples/styled.md](examples/styled.md).
+
+## Pairing math delimiters
+
+Pairing and cursor placement are editor features, so this uses Zed keybindings
+rather than the language server. Open **`zed: open keymap file`** and merge the
+objects from [config/markdown-math-keymap.json](config/markdown-math-keymap.json)
+into the existing outer array. Preserve your other keybindings.
+
+Typing `$`, `"`, `(`, `[`, or `{` inserts both signs and places the cursor **inside**
+the pair. Press **Tab** to move after the closing sign. Typing `$` twice creates
+`$$...$$` with the cursor between the inner dollar signs. Bracket shortcuts also
+work immediately before a closing `$`, where native Markdown pairing may skip.
+
+The bindings apply to Markdown file extensions throughout the file, including
+prose and code blocks. They are insertion snippets, not context-aware pair tracking
+or selection-surround commands: typing another dollar or quote creates another
+pair; use Tab to exit the current one. They preserve Vim normal-mode bindings.
+Primes, inequalities, and Markdown table pipes are not assigned pairing shortcuts.
+Standalone Typst files keep their existing native pairing.
+
+## Suggestions in Markdown
+
+The Markdown preview server also provides Tinymist completions when the cursor
+is inside the leading triple-quoted header or `$...$` / `$$...$$` math. After
+reloading extensions, try typing `fr` inside math for `frac`, or `#set te` in the
+header for `text`. Font-name suggestions are available in `#set text(font: "...")`.
+Variables declared earlier in the header can be completed later in that header.
+
+Suggestions work before the closing math delimiter or header quotes are typed.
+Ordinary prose, inline code, backtick/tilde code fences, and indented code do not
+activate this provider. Existing Markdown servers keep their own completions.
+
+Only edits within the active embedded region are accepted. Completion commands,
+lazy resolution, and suggestions requiring edits elsewhere are omitted. This adds
+completions, not signature-help popups, hover, formatting, or Markdown diagnostics.
+Header variables are not automatically available inside equations: the rendering
+callback evaluates math in a separate scope, and math suggestions follow that scope.
+Single-dollar completions are limited to the current line; use `$$` for multiline
+math. Currency detection is conservative, so an unfinished expression beginning
+with a number may need its closing `$` before suggestions activate.
 
 ## Configuration
 

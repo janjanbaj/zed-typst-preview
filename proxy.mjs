@@ -9,6 +9,9 @@ const tinymistBin = process.argv[2] || 'tinymist';
 const markdownMode = process.argv.includes("--markdown");
 const tinymistArgs = process.argv.slice(3).filter(arg => arg !== "--markdown");
 const markdownDocuments = new Map();
+const markdownVersions = new Map();
+const completionDocuments = new Map();
+const completionRequests = new Map();
 
 function typstString(text) {
   return '"' + text.replace(/["\\\x00-\x1f]/g, char => {
@@ -17,11 +20,27 @@ function typstString(text) {
   }) + '"';
 }
 
+function markdownHeader(text) {
+  // Only a complete triple-quoted header at the start is executable Typst.
+  const opening = /^(?:\uFEFF)?(?:[ \t]*\r?\n)*"""[ \t]*\r?\n/.exec(text);
+  if (!opening) return { preamble: '', markdown: text };
+  const closing = /^"""[ \t]*(?:\r?\n|$)/gm;
+  closing.lastIndex = opening[0].length;
+  const end = closing.exec(text);
+  if (!end) return { preamble: '', markdown: text };
+  return {
+    preamble: text.slice(opening[0].length, end.index),
+    markdown: text.slice(end.index + end[0].length)
+  };
+}
+
 function markdownTypst(text, version = 0) {
+  const { preamble, markdown } = markdownHeader(text);
   return `#import "@preview/cmarker:0.1.8"
 #set page(margin: 24pt, height: auto)
+${preamble}
 #cmarker.render(
-  ${typstString(text)},
+  ${typstString(markdown)},
   raw-typst: false,
   math: (source, block: false) => math.equation(block: block, eval(source, mode: "math")),
   scope: (image: (source, ..args) => image(source, ..args)),
@@ -41,9 +60,9 @@ function editFraction(before, after) {
   return after.length ? (after.length - suffix) / after.length : 0;
 }
 
-function shadowUri(uri) {
+function shadowUri(uri, suffix = ".zed-preview.typ") {
   const url = new URL(uri);
-  url.pathname += ".zed-preview.typ";
+  url.pathname += suffix;
   return url.href;
 }
 
@@ -55,6 +74,167 @@ function positionOffset(text, position) {
     offset = end + 1;
   }
   return offset + position.character;
+}
+
+function positionAtOffset(text, offset) {
+  const before = text.slice(0, offset);
+  return { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 };
+}
+
+function typstCompletionRegion(text, offset) {
+  const opening = /^(?:\uFEFF)?(?:[ \t]*\r?\n)*"""[ \t]*\r?\n/.exec(text);
+  let bodyStart = 0;
+  if (opening) {
+    const closing = /^"""[ \t]*(?:\r?\n|$)/gm;
+    closing.lastIndex = opening[0].length;
+    const end = closing.exec(text);
+    const start = opening[0].length;
+    const stop = end?.index ?? text.length;
+    if (offset >= start && (offset < stop || (!end && offset === stop))) {
+      return { kind: 'header', start, end: stop };
+    }
+    if (!end) return null;
+    bodyStart = end.index + end[0].length;
+  }
+  let fence = null, ticks = 0, math = null, quoted = false;
+  const contains = region => offset >= region.start && offset <= region.end;
+  for (let i = bodyStart; i < text.length;) {
+    if (!math && !ticks && (i === bodyStart || text[i - 1] === '\n')) {
+      const end = text.indexOf('\n', i);
+      const line = text.slice(i, end < 0 ? text.length : end);
+      const match = /^[ \t]{0,3}(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?(`{3,}|~{3,})(.*)/.exec(line);
+      if (fence || match || /^(?: {4}|\t)/.test(line)) {
+        if (fence) {
+          if (match && match[1][0] === fence.char && match[1].length >= fence.length && !match[2].trim()) fence = null;
+        } else if (match) fence = { char: match[1][0], length: match[1].length };
+        i = end < 0 ? text.length : end + 1;
+        continue;
+      }
+    }
+    if (text[i] === '\\' && !ticks) { i += 2; continue; }
+    if (math) {
+      if (text[i] === '\n' && math.delimiter === 1) {
+        const region = { ...math, end: i, closed: false };
+        if (contains(region)) return region;
+        math = null; quoted = false;
+      } else if (text[i] === '"') quoted = !quoted;
+      else if (!quoted && text.startsWith('$'.repeat(math.delimiter), i) &&
+          (math.delimiter === 2 || !/\d/.test(text[i + 1] || ''))) {
+        const region = { ...math, end: i, closed: true };
+        if (contains(region)) return region;
+        i += math.delimiter; math = null;
+        continue;
+      }
+      i++; continue;
+    }
+    if (text[i] === '`') {
+      const run = /^`+/.exec(text.slice(i))[0].length;
+      if (!ticks) ticks = run;
+      else if (ticks === run) ticks = 0;
+      i += run; continue;
+    }
+    if (!ticks && text[i] === '$') {
+      const delimiter = text[i + 1] === '$' ? 2 : 1;
+      if (delimiter === 1) {
+        const lineEnd = text.indexOf('\n', i);
+        const rest = text.slice(i + 1, lineEnd < 0 ? text.length : lineEnd);
+        // Currency without a closing math delimiter should not activate suggestions.
+        if (/^\d/.test(rest) && !/[-+*/^_=()[\]{}]/.test(rest) &&
+            !/(?:^|[^\\])\$(?!\d)/.test(rest)) { i++; continue; }
+      }
+      math = { kind: 'math', start: i + delimiter, delimiter };
+      quoted = false; i += delimiter; continue;
+    }
+    i++;
+  }
+  const region = math && { ...math, end: text.length, closed: false };
+  return region && contains(region) ? region : null;
+}
+
+function completionProjection(text, region) {
+  // Mask by UTF-16 code unit, preserving emoji widths, CRLF, and every source position.
+  const masked = text.replace(/[^\r\n]/g, ' ').split('');
+  for (let i = region.start; i < region.end; i++) masked[i] = text[i];
+  if (region.kind === 'math') {
+    masked[region.start - region.delimiter] = '$';
+    if (region.closed) masked[region.end + region.delimiter - 1] = '$';
+  }
+  return masked.join('') + (region.kind === 'math' && !region.closed ? '\n$' : '');
+}
+
+function completionRangeInside(range, context) {
+  if (!range?.start || !range?.end) return false;
+  const lines = context.lines || context.text.split('\n');
+  const valid = pos => Number.isInteger(pos.line) && Number.isInteger(pos.character) &&
+    pos.line >= 0 && pos.line < lines.length && pos.character >= 0 &&
+    pos.character <= lines[pos.line].replace(/\r$/, '').length;
+  if (!valid(range.start) || !valid(range.end)) return false;
+  const compare = (a, b) => a.line - b.line || a.character - b.character;
+  const start = context.regionStart || positionAtOffset(context.text, context.region.start);
+  const end = context.regionEnd || positionAtOffset(context.text, context.region.end);
+  return compare(start, range.start) <= 0 && compare(range.start, range.end) <= 0 && compare(range.end, end) <= 0;
+}
+
+function completionStringRange(context) {
+  if (context.region.kind !== 'header' || !context.position) return null;
+  const cursor = positionOffset(context.text, context.position);
+  let start = null, lineComment = false, blockDepth = 0;
+  for (let i = context.region.start; i < cursor; i++) {
+    const pair = context.text.slice(i, i + 2), char = context.text[i];
+    if (lineComment) { if (char === '\n') lineComment = false; continue; }
+    if (blockDepth) {
+      if (pair === '/*') { blockDepth++; i++; }
+      else if (pair === '*/') { blockDepth--; i++; }
+      continue;
+    }
+    if (start !== null) {
+      if (char === '\\') i++;
+      else if (char === '"') start = null;
+    } else if (pair === '//') { lineComment = true; i++; }
+    else if (pair === '/*') { blockDepth++; i++; }
+    else if (char === '"') start = i;
+  }
+  if (start === null || lineComment || blockDepth) return null;
+  let end = cursor;
+  for (let i = cursor; i < context.region.end && !/[\r\n]/.test(context.text[i]); i++) {
+    if (context.text[i] === '\\') i++;
+    else if (context.text[i] === '"') { end = i + 1; break; }
+  }
+  return { start: positionAtOffset(context.text, start), end: positionAtOffset(context.text, end) };
+}
+
+function markdownCompletions(result, context) {
+  context = { ...context, lines: context.text.split('\n'),
+    regionStart: positionAtOffset(context.text, context.region.start),
+    regionEnd: positionAtOffset(context.text, context.region.end) };
+  const defaults = result?.itemDefaults || {};
+  const stringRange = completionStringRange(context);
+  const items = Array.isArray(result) ? result : result?.items || [];
+  const mapped = items.flatMap(item => {
+    const copy = { ...item };
+    if (stringRange && /^"(?:[^"\\]|\\.)*"$/s.test(copy.label)) {
+      // Tinymist 0.14 can return insertion-only font edits inside a partial string.
+      copy.textEdit = { range: stringRange, newText: copy.label };
+      copy.insertTextFormat = 1;
+    }
+    if (!copy.textEdit && defaults.editRange) {
+      const edit = defaults.editRange;
+      copy.textEdit = { ...(edit.insert ? edit : { range: edit }), newText: copy.textEditText ?? copy.insertText ?? copy.label };
+    }
+    if (copy.textEdit) {
+      const edit = copy.textEdit;
+      const ranges = edit.range ? [edit.range] : [edit.insert, edit.replace];
+      if (!ranges.every(range => completionRangeInside(range, context))) return [];
+    }
+    if (copy.additionalTextEdits?.some(edit => !completionRangeInside(edit.range, context))) return [];
+    for (const key of ['insertTextFormat', 'insertTextMode', 'commitCharacters']) {
+      if (copy[key] === undefined && defaults[key] !== undefined) copy[key] = defaults[key];
+    }
+    // No lazy resolve or commands: they could introduce edits to generated files.
+    delete copy.data; delete copy.command;
+    return [copy];
+  });
+  return { isIncomplete: !!result?.isIncomplete, items: mapped };
 }
 
 if (!tinymistArgs.includes('lsp')) {
@@ -262,15 +442,47 @@ function handleMarkdownScrollResult(msg, target) {
   });
 }
 
-// The Markdown connection is preview-only. Zed owns Markdown; Tinymist sees
+function completeMarkdown(msg) {
+  const uri = msg.params?.textDocument?.uri;
+  const text = markdownDocuments.get(uri);
+  const position = msg.params?.position;
+  const region = text !== undefined && position && typstCompletionRegion(text, positionOffset(text, position));
+  if (!region) {
+    sendMsg(process.stdout, { jsonrpc: '2.0', id: msg.id, result: null });
+    return;
+  }
+  focusMarkdownPreview(shadowUri(uri));
+  const projectedUri = shadowUri(uri, '.zed-completion.typ');
+  const projectedText = completionProjection(text, region);
+  const previous = completionDocuments.get(uri);
+  if (!previous || previous.text !== projectedText) {
+    const version = (previous?.version || 0) + 1;
+    sendMsg(child.stdin, {
+      jsonrpc: '2.0', method: previous ? 'textDocument/didChange' : 'textDocument/didOpen',
+      params: previous
+        ? { textDocument: { uri: projectedUri, version }, contentChanges: [{ text: projectedText }] }
+        : { textDocument: { uri: projectedUri, languageId: 'typst', version, text: projectedText } }
+    });
+    completionDocuments.set(uri, { text: projectedText, version });
+  }
+  completionRequests.set(msg.id, { uri, version: markdownVersions.get(uri), text, region, position });
+  sendMsg(child.stdin, { ...msg, params: { ...msg.params, textDocument: { uri: projectedUri } } });
+}
+
+// Zed owns Markdown; Tinymist sees
 // a sibling virtual .typ file, preserving relative asset paths without disk writes.
 function handleMarkdownMessage(msg) {
   const method = msg.method || '';
   if (!method.startsWith('textDocument/')) return false;
   const doc = msg.params?.textDocument;
+  if (method === 'textDocument/completion') {
+    completeMarkdown(msg);
+    return true;
+  }
   if (method === 'textDocument/didOpen') {
     if (!doc?.uri?.startsWith('file://')) return true;
     markdownDocuments.set(doc.uri, doc.text);
+    markdownVersions.set(doc.uri, doc.version);
     msg.params.textDocument = {
       uri: shadowUri(doc.uri), languageId: 'typst', version: doc.version,
       text: markdownTypst(doc.text, doc.version)
@@ -288,6 +500,7 @@ function handleMarkdownMessage(msg) {
         : change.text;
     }
     markdownDocuments.set(doc.uri, text);
+    markdownVersions.set(doc.uri, doc.version);
     const fraction = editFraction(before, text);
     if (fraction !== null) {
       clearTimeout(markdownScrollTimer);
@@ -301,6 +514,11 @@ function handleMarkdownMessage(msg) {
   }
   if (method === 'textDocument/didClose') {
     if (!markdownDocuments.delete(doc?.uri)) return true;
+    markdownVersions.delete(doc.uri);
+    if (completionDocuments.delete(doc.uri)) {
+      sendMsg(child.stdin, { jsonrpc: '2.0', method: 'textDocument/didClose',
+        params: { textDocument: { uri: shadowUri(doc.uri, '.zed-completion.typ') } } });
+    }
     const uri = shadowUri(doc.uri);
     if (activeMarkdownPreviewUri === uri) activeMarkdownPreviewUri = null;
     if (pendingMarkdownScroll?.uri === uri) {
@@ -435,6 +653,14 @@ new MessageReader(process.stdin, (msg) => {
 
 // Tinymist -> Zed
 new MessageReader(child.stdout, (msg) => {
+  if (completionRequests.has(msg.id)) {
+    const context = completionRequests.get(msg.id);
+    completionRequests.delete(msg.id);
+    const current = markdownVersions.get(context.uri) === context.version;
+    sendMsg(process.stdout, { jsonrpc: '2.0', id: msg.id,
+      result: current && !msg.error ? markdownCompletions(msg.result, context) : null });
+    return;
+  }
   if (markdownScrollQueries.has(msg.id)) {
     const target = markdownScrollQueries.get(msg.id);
     markdownScrollQueries.delete(msg.id);
@@ -488,11 +714,17 @@ new MessageReader(child.stdout, (msg) => {
   if (msg.result?.capabilities) {
     if (markdownMode) {
       // Generated Typst positions cannot be used for Markdown editing or navigation.
+      const completionProvider = msg.result.capabilities.completionProvider || { triggerCharacters: ["#", ".", "(", ",", ":", "\"", "/", "$"] };
       msg.result.capabilities = {
         positionEncoding: 'utf-16',
         textDocumentSync: { openClose: true, change: 1 },
         codeActionProvider: true,
         documentHighlightProvider: true,
+        completionProvider: {
+          ...completionProvider,
+          triggerCharacters: [...new Set([...(completionProvider.triggerCharacters || []), '$'])],
+          resolveProvider: false
+        },
         executeCommandProvider: { commands: ['typst-preview.open'] }
       };
       sendMsg(process.stdout, msg);
