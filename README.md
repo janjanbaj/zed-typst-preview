@@ -146,7 +146,16 @@ prose and code blocks. They are insertion snippets, not context-aware pair track
 or selection-surround commands: typing another dollar or quote creates another
 pair; use Tab to exit the current one. They preserve Vim normal-mode bindings.
 Primes, inequalities, and Markdown table pipes are not assigned pairing shortcuts.
-Standalone Typst files keep their existing native pairing.
+For standalone Typst, merge [config/typst-math-keymap.json](config/typst-math-keymap.json)
+into the same keymap array. Its `(`, `[`, and `{` shortcuts work before `$` and
+inside nested calls such as `$cal(...)$`, with the cursor inside the new pair.
+They apply throughout `.typ`/`.typst` files, not only in math, and use Tab to
+exit the pair. Existing native dollar/quote pairing is unchanged.
+
+This extension also configures native Typst pairing, but a separate installed
+Typst extension can own the language configuration. Selecting the preview LSP
+does not select its language configuration. The keymap works with either provider;
+no LSP needs to be disabled.
 
 ## Suggestions in Markdown
 

@@ -74,3 +74,14 @@ Replaced machine-specific handoff notes with portable architecture documentation
 Removed placeholder author/repository identity from the extension manifest. Added
 source-sharing exclusions and preserved the MIT notice for the Typst grammar queries.
 Local compiled artifacts and reference checkouts are not included in the source archive.
+
+
+## Typst nested bracket pairing
+
+Added native `autoclose_before` characters for math and bracket closers. Local
+investigation showed that the separate Typst extension owns the language metadata,
+so changing only this extension's language config does not affect that setup.
+Added reusable `.typ`/`.typst` bracket insertion snippets and merged them into the
+local keymap, preserving other bindings. Pairing is independent of the LSP;
+no language server was disabled. JSON and tab stops were checked; user verifies
+actual typing in Zed.

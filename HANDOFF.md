@@ -135,7 +135,14 @@ caret, and the extension API cannot register editor keybindings. Users merge thi
 optional configuration into their keymap. The context is limited to Markdown file
 extensions and excludes Vim normal mode. These are unconditional insertion snippets
 within those files; there is no syntax-aware closer skipping or selected-text wrap.
-Existing native Typst behavior is unchanged. Config JSON and tab-stop placement
+Native Typst pairing allows insertion before math and bracket closers through
+`autoclose_before` in `languages/typst/config.toml`, including nested calls.
+However, a separate installed Typst extension can own the language definition;
+choosing `tinymist-preview` does not change that ownership. The portable
+`config/typst-math-keymap.json` supplies provider-independent bracket snippets
+for `.typ`/`.typst` files (all syntax regions, insert/replace modes). It leaves
+native dollar/quote handling intact. Merge it into the user keymap; an extension
+cannot install these bindings automatically. Config JSON and tab-stop placement
 were checked; actual keypress behavior is a manual UI check.
 
 ## Verification and release preparation
