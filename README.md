@@ -81,6 +81,11 @@ sum_(k=1)^n k = n(n+1)/2
 $$
 ```
 
+Padding inside single dollars is accepted: `$ H(t) $`, `$ H(t)$`, and `$H(t) $`
+render like `$H(t)$`. This normalization affects only the generated preview;
+editor positions and code blocks are preserved. Single dollars remain inline;
+use `$$ H(t) $$` for display math.
+
 Markdown delimiters determine inline versus display math. LaTeX commands such as
 `\frac` are not automatically converted into Typst syntax.
 
@@ -157,6 +162,27 @@ Typst extension can own the language configuration. Selecting the preview LSP
 does not select its language configuration. The keymap works with either provider;
 no LSP needs to be disabled.
 
+## Reusing math from the current document
+
+Both preview servers add **Math history** suggestions alongside Tinymist completions
+inside dollar math in `.typ`/`.typst` and Markdown files. Type at least two characters:
+for example, after using `$cal(H) + alpha_i + E_(n)^2$`, type `ca`, `al`, or `E_`
+in another equation and select the matching history item. It inserts the complete
+term as plain text, including its scripts and balanced groups.
+
+Matches prefer prefixes, then case-insensitive/boundary/fuzzy matches; frequent
+and later occurrences rank first within the same match quality. There are at most
+40 history results. Math history is scoped to the current open document; it is not
+shared across files or saved to disk. Edits refresh the index after 180 ms of idle
+time. The first request builds it immediately.
+
+Prose, raw/code blocks, Markdown headers, strings, and comments are excluded.
+Typst permits multiline `$…$`; Markdown follows the existing `$…$`/`$$…$$` rules.
+History stores terms up to 96 UTF-8 bytes and simple contiguous calls such as
+`cal(H)`; it is not a whole-equation/snippet recorder for arbitrary spaced formulas.
+Single ASCII letters and language keywords are omitted. The document index is
+limited to 2,000 distinct terms. No Neovim installation is required.
+
 ## Suggestions in Markdown
 
 The Markdown preview server also provides Tinymist completions when the cursor
@@ -171,12 +197,25 @@ activate this provider. Existing Markdown servers keep their own completions.
 
 Only edits within the active embedded region are accepted. Completion commands,
 lazy resolution, and suggestions requiring edits elsewhere are omitted. This adds
-completions, not signature-help popups, hover, formatting, or Markdown diagnostics.
+completions; signature-help popups, hover, and formatting remain disabled.
 Header variables are not automatically available inside equations: the rendering
 callback evaluates math in a separate scope, and math suggestions follow that scope.
 Single-dollar completions are limited to the current line; use `$$` for multiline
 math. Currency detection is conservative, so an unfinished expression beginning
 with a number may need its closing `$` before suggestions activate.
+
+## Math errors in Markdown
+
+Tinymist errors inside dollar math are published as **Typst math** diagnostics
+at the original Markdown positions. Use Zed's underline/diagnostic display to
+read unknown-variable and syntax errors. Reports clear on edits and close;
+delayed reports from earlier revisions are discarded. No additional server or
+disk files are required.
+
+Only embedded math is checked this way. Errors in the triple-quoted header,
+images, packages, or the generated rendering wrapper are not mapped to Markdown
+underlines. An invalid equation can leave the last successful browser preview
+visible until corrected. Native `.typ` diagnostics retain their normal behavior.
 
 ## Configuration
 
@@ -204,8 +243,8 @@ A custom Tinymist executable can be selected through the server's `binary.path`.
 
 - Edit-follow scrolling estimates position from source length and rendered
   height. Large images, tables, and uneven layouts reduce its accuracy.
-- Invalid math can leave the last successful preview visible. Generated Typst
-  diagnostics are suppressed for Markdown because their positions do not map back.
+- Invalid math can leave the last successful preview visible. Embedded math
+  errors have Markdown underlines; other generated-rendering errors remain unmapped.
 - Obsidian-specific syntax is not implemented. Remote images are not downloaded
   automatically, and cmarker raw-Typst comment injection is disabled.
 - Different worktrees or language-server sessions can create separate previews.
@@ -221,13 +260,17 @@ The existing manual build uses the `wasm32-wasip1` target:
 rustup target add wasm32-wasip1
 cargo build --release --target wasm32-wasip1 --locked
 cp target/wasm32-wasip1/release/zed_typst_preview.wasm extension.wasm
-node --test tests/markdown-preview.test.mjs
+node --test tests/*.test.mjs
 ```
 
 Zed's own development-extension builder may use a different WASI target depending
-on its version. The `extension.wasm` file embeds `proxy.mjs`; rebuild it after
-changing the proxy. Tests require Node.js with its built-in test runner and
+on its version. The `extension.wasm` file embeds `proxy.mjs` and `math-history.mjs`;
+rebuild it after changing either file. Both scripts are provisioned together on
+server startup. Tests require Node.js with its built-in test runner and
 permission to bind a loopback port. They use a fake Tinymist and do not open a browser.
+Set `TINYMIST_TEST_BINARY` to a pinned real Tinymist executable to also run the
+padded-math rendering and source-diagnostic checks; these are explicitly skipped
+when the variable is absent.
 
 [Architecture and maintenance notes](HANDOFF.md) explain the implementation.
 [Work log](docs/WORK_LOG.md) records changes and validation.
