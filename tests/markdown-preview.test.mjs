@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../proxy.mjs', import.meta.url), 'utf8');
 const helpers = source.slice(source.indexOf('function typstString'), source.indexOf("if (!tinymistArgs.includes"));
-const { markdownTypst, editFraction, markdownHeader, typstCompletionRegion, completionProjection, markdownCompletions, completionRangeInside, positionAtOffset, positionOffset } = vm.runInNewContext(helpers + ';({markdownTypst, editFraction, markdownHeader, typstCompletionRegion, completionProjection, markdownCompletions, completionRangeInside, positionAtOffset, positionOffset})', { URL });
+const { normalizeMarkdownMathPadding, markdownTypst, editFraction, markdownHeader, typstCompletionRegion, completionProjection, markdownCompletions, completionRangeInside, positionAtOffset, positionOffset, markdownMathCheck, markdownMathDiagnostics } = vm.runInNewContext(helpers + ';({normalizeMarkdownMathPadding, markdownTypst, editFraction, markdownHeader, typstCompletionRegion, completionProjection, markdownCompletions, completionRangeInside, positionAtOffset, positionOffset, markdownMathCheck, markdownMathDiagnostics})', { URL });
 
 test('wrapper preserves Markdown escapes and selects native Typst math', () => {
   const text = '# Heading\n$frac(1, 2)$ and \\u1234 "quoted" 😀\r\n\t\0';
@@ -18,6 +18,76 @@ test('wrapper preserves Markdown escapes and selects native Typst math', () => {
   assert.ok(wrapper.includes('\\\\u1234'));
   assert.ok(wrapper.includes('\\u{a}'));
   assert.ok(wrapper.includes('\\u{0}'));
+});
+
+test('rendering accepts padded inline math without rewriting code, headers, or display math', () => {
+  const input = '😀 $ H(t) $ and $H(t)$; $ H(t)$; $H(t) $; $\tH(t)\t$.';
+  const normalized = '😀 $H(t)$ and $H(t)$; $H(t)$; $H(t)$; $H(t)$.';
+  assert.equal(normalizeMarkdownMathPadding(input), normalized);
+  assert.ok(markdownTypst(input).includes('😀 $H(t)$ and $H(t)$'));
+  const protectedText = '\\$ H(t) $\n`$ H(t) $`\n```typst\n$ H(t) $\n```\n' +
+    '~~~\n$ H(t) $\n~~~\n> ```\n> $ H(t) $\n> ```\n    $ H(t) $\n$$ H(t) $$\n$  $\n$ H(t)';
+  assert.equal(normalizeMarkdownMathPadding(protectedText), protectedText);
+  const header = '"""\n#let literal = "$ H(t) $"\n"""\n';
+  assert.equal(normalizeMarkdownMathPadding(header + '$ H(t) $'), header + '$H(t)$');
+  const crlf = 'Before $ H(t) $\r\nAfter $ H(t) $';
+  assert.equal(normalizeMarkdownMathPadding(crlf), 'Before $H(t)$\r\nAfter $H(t)$');
+});
+
+test('padded math completion positions stay in the original source', () => {
+  const text = '😀 before $ H(t) $ after';
+  const cursor = text.indexOf('H(t)') + 1;
+  const region = typstCompletionRegion(text, cursor);
+  assert.equal(region.kind, 'math');
+  const projection = completionProjection(text, region);
+  assert.equal(projection.length, text.length);
+  assert.equal(projection.slice(region.start, region.end), ' H(t) ');
+  assert.equal(positionOffset(projection, positionAtOffset(text, cursor)), cursor);
+  assert.ok(markdownTypst(text).includes('$H(t)$'));
+});
+
+test('real cmarker reaches the math callback for padded and unpadded formulas', {
+  skip: !process.env.TINYMIST_TEST_BINARY && 'Set TINYMIST_TEST_BINARY for the real rendering check'
+}, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'markdown-padding-render-'));
+  try {
+    const markdown = '$H(t)$\n\n$ H(t) $\n\n$ H(t)$\n\n$H(t) $\n\n$\tH(t)\t$\n\n$$ H(t) $$\n\n' +
+      '`$ H(t) $`\n\n```typst\n$ H(t) $\n```';
+    const wrapper = markdownTypst(markdown).replace(
+      '=> math.equation(block: block, eval(source, mode: "math"))',
+      '=> [#metadata((block: block)) <padding-math>#math.equation(block: block, eval(source, mode: "math"))]'
+    ) + '\n#context {\n' +
+      '  assert(query(<padding-math>).len() == 6, message: "missing math callback")\n' +
+      '  assert(query(<padding-math>).filter(it => it.value.block).len() == 1, message: "wrong display mode")\n}';
+    const input = path.join(dir, 'probe.typ');
+    writeFileSync(input, wrapper);
+    const compiled = spawnSync(process.env.TINYMIST_TEST_BINARY, ['compile', '--root', dir, input, path.join(dir, 'probe.pdf')], { encoding: 'utf8', timeout: 15000 });
+    assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('math checking masks prose/code and preserves original UTF-16 diagnostic positions', () => {
+  const source = '😀 prose $ not-a-symbol $\r\n`$bad$`\n$$\nH(t)\n$$';
+  const check = markdownMathCheck(source);
+  assert.equal(check.text.length, source.length);
+  assert.equal(check.regions.length, 2);
+  assert.equal(check.text.slice(0, 9), '         ');
+  assert.ok(!check.text.includes('prose'));
+  assert.ok(!check.text.includes('bad'));
+  const range = { start: { line: 0, character: 11 }, end: { line: 0, character: 23 } };
+  const mapped = markdownMathDiagnostics([
+    { range, message: 'unknown variable', severity: 1, relatedInformation: [{ location: { uri: 'generated' } }], data: { generated: true } },
+    { range: { start: { line: 1, character: 2 }, end: { line: 1, character: 4 } }, message: 'code should not map' },
+    { range: { start: { line: 40, character: 0 }, end: { line: 40, character: 1 } }, message: 'invalid range' }
+  ], { source, regions: check.regions });
+  assert.equal(mapped.length, 1);
+  assert.equal(mapped[0].message, 'unknown variable');
+  assert.equal(mapped[0].source, 'Typst math');
+  assert.equal(mapped[0].data, undefined);
+  assert.equal(mapped[0].relatedInformation, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(mapped[0].range)), range);
+  const wrapper = markdownTypst(source, 1, 'notes.md.zed-math-1.typ');
+  assert.ok(wrapper.includes('#let _zed_math_check = include "notes.md.zed-math-1.typ"'));
 });
 
 test('a leading triple-quoted header styles the document and preserves code blocks', () => {
@@ -223,13 +293,13 @@ process.stdin.on('data', chunk => {
   send({method:'textDocument/didClose',params:{textDocument:{uri}}});
   await until(()=>recorded().some(m=>m.method==='textDocument/didClose') && messages.some(m=>m.id===8) && recorded().some(m=>m.id==='edit'));
   const records=recorded();
-  const open=records.find(m=>m.method==='textDocument/didOpen').params.textDocument;
+  const open=records.find(m=>m.method==='textDocument/didOpen' && m.params.textDocument.uri.endsWith('.zed-preview.typ')).params.textDocument;
   assert.equal(open.uri,uri+'.zed-preview.typ');
   assert.equal(open.languageId,'typst');
   assert.ok(open.text.includes('@preview/cmarker:0.1.8'));
   const changes=records.filter(m=>m.method==='textDocument/didChange');
-  assert.equal(changes[0].params.contentChanges[0].text,markdownTypst('😀 $y^2$\r\nnext',2));
-  assert.equal(changes[1].params.contentChanges[0].text,markdownTypst('# Changed\n$$frac(1, 2)$$',3));
+  assert.equal(changes[0].params.contentChanges[0].text,markdownTypst('😀 $y^2$\r\nnext',2,'notes space.md.zed-math-2.typ'));
+  assert.equal(changes[1].params.contentChanges[0].text,markdownTypst('# Changed\n$$frac(1, 2)$$',3,'notes space.md.zed-math-3.typ'));
   assert.equal(records.find(m=>m.id==='jump').result.success,false);
   assert.equal(records.find(m=>m.id==='edit').result.applied,false);
   assert.equal(messages.find(m=>m.id===2).result,null);
@@ -244,7 +314,7 @@ process.stdin.on('data', chunk => {
   assert.deepEqual(messages.find(m=>m.id===8).result,[]);
   assert.ok(!records.some(m=>m.method==='textDocument/documentHighlight'));
   assert.ok(!records.some(m=>m.params?.command==='tinymist.scrollPreview'));
-  assert.ok(!messages.some(m=>m.method==='textDocument/publishDiagnostics'));
+  assert.ok(messages.filter(m=>m.method==='textDocument/publishDiagnostics').every(m=>m.params.diagnostics.length===0 && !m.params.uri.endsWith('.typ')));
   // An edit near the beginning should scroll proportionally after rendering,
   // with rapid changes coalesced and the latest revision selected.
   const before='# Other\n\n'+'body '.repeat(100);

@@ -3,6 +3,7 @@ import cp from 'node:child_process';
 import net from 'node:net';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { MathHistory, mergeMathCompletions } from './math-history.mjs';
 
 // Parse arguments
 const tinymistBin = process.argv[2] || 'tinymist';
@@ -12,6 +13,11 @@ const markdownDocuments = new Map();
 const markdownVersions = new Map();
 const completionDocuments = new Map();
 const completionRequests = new Map();
+const mathHistory = new MathHistory(text => [...typstCompletionRegions(text)].filter(r => r.kind === 'math'));
+const markdownChecks = new Map();
+const checkOwners = new Map();
+const staleChecks = [];
+let checkSequence = 0;
 
 function typstString(text) {
   return '"' + text.replace(/["\\\x00-\x1f]/g, char => {
@@ -34,10 +40,26 @@ function markdownHeader(text) {
   };
 }
 
-function markdownTypst(text, version = 0) {
-  const { preamble, markdown } = markdownHeader(text);
+function normalizeMarkdownMathPadding(text) {
+  // cmark rejects whitespace beside inline dollars; change only the render copy.
+  const parts = [];
+  let cursor = 0;
+  for (const region of typstCompletionRegions(text)) {
+    if (region.kind !== 'math' || region.delimiter !== 1 || !region.closed) continue;
+    const source = text.slice(region.start, region.end);
+    const trimmed = source.trim();
+    if (!trimmed || source === trimmed) continue;
+    parts.push(text.slice(cursor, region.start), trimmed);
+    cursor = region.end;
+  }
+  return parts.length ? parts.join('') + text.slice(cursor) : text;
+}
+
+function markdownTypst(text, version = 0, checkFile = null) {
+  const { preamble, markdown } = markdownHeader(normalizeMarkdownMathPadding(text));
   return `#import "@preview/cmarker:0.1.8"
 #set page(margin: 24pt, height: auto)
+${checkFile ? '#let _zed_math_check = include ' + typstString(checkFile) : ''}
 ${preamble}
 #cmarker.render(
   ${typstString(markdown)},
@@ -81,7 +103,7 @@ function positionAtOffset(text, offset) {
   return { line: before.split('\n').length - 1, character: offset - before.lastIndexOf('\n') - 1 };
 }
 
-function typstCompletionRegion(text, offset) {
+function* typstCompletionRegions(text) {
   const opening = /^(?:\uFEFF)?(?:[ \t]*\r?\n)*"""[ \t]*\r?\n/.exec(text);
   let bodyStart = 0;
   if (opening) {
@@ -90,14 +112,11 @@ function typstCompletionRegion(text, offset) {
     const end = closing.exec(text);
     const start = opening[0].length;
     const stop = end?.index ?? text.length;
-    if (offset >= start && (offset < stop || (!end && offset === stop))) {
-      return { kind: 'header', start, end: stop };
-    }
-    if (!end) return null;
+    yield { kind: 'header', start, end: stop, closed: !!end };
+    if (!end) return;
     bodyStart = end.index + end[0].length;
   }
   let fence = null, ticks = 0, math = null, quoted = false;
-  const contains = region => offset >= region.start && offset <= region.end;
   for (let i = bodyStart; i < text.length;) {
     if (!math && !ticks && (i === bodyStart || text[i - 1] === '\n')) {
       const end = text.indexOf('\n', i);
@@ -115,13 +134,13 @@ function typstCompletionRegion(text, offset) {
     if (math) {
       if (text[i] === '\n' && math.delimiter === 1) {
         const region = { ...math, end: i, closed: false };
-        if (contains(region)) return region;
+        yield region;
         math = null; quoted = false;
       } else if (text[i] === '"') quoted = !quoted;
       else if (!quoted && text.startsWith('$'.repeat(math.delimiter), i) &&
           (math.delimiter === 2 || !/\d/.test(text[i + 1] || ''))) {
         const region = { ...math, end: i, closed: true };
-        if (contains(region)) return region;
+        yield region;
         i += math.delimiter; math = null;
         continue;
       }
@@ -148,7 +167,36 @@ function typstCompletionRegion(text, offset) {
     i++;
   }
   const region = math && { ...math, end: text.length, closed: false };
-  return region && contains(region) ? region : null;
+  if (region) yield region;
+}
+
+function typstCompletionRegion(text, offset) {
+  for (const region of typstCompletionRegions(text)) {
+    if (offset >= region.start && offset <= region.end &&
+        (region.kind !== 'header' || offset < region.end || !region.closed)) return region;
+  }
+  return null;
+}
+
+function changedText(text, changes) {
+  for (const change of changes) {
+    text = change.range
+      ? text.slice(0, positionOffset(text, change.range.start)) + change.text + text.slice(positionOffset(text, change.range.end))
+      : change.text;
+  }
+  return text;
+}
+
+function observeMathDocument(msg) {
+  const doc = msg.params?.textDocument;
+  if (!doc?.uri) return;
+  if (msg.method === 'textDocument/didOpen' && doc.uri.startsWith('file://') &&
+      (markdownMode || doc.languageId === 'typst' || /\.(typ|typst)$/.test(doc.uri))) {
+    mathHistory.open(doc.uri, doc.text, doc.version, markdownMode);
+  } else if (msg.method === 'textDocument/didChange') {
+    const previous = mathHistory.get(doc.uri);
+    if (previous) mathHistory.change(doc.uri, changedText(previous.text, msg.params.contentChanges), doc.version);
+  } else if (msg.method === 'textDocument/didClose') mathHistory.close(doc.uri);
 }
 
 function completionProjection(text, region) {
@@ -160,6 +208,48 @@ function completionProjection(text, region) {
     if (region.closed) masked[region.end + region.delimiter - 1] = '$';
   }
   return masked.join('') + (region.kind === 'math' && !region.closed ? '\n$' : '');
+}
+
+function markdownMathCheck(text) {
+  const regions = [...typstCompletionRegions(text)].filter(r => r.kind === 'math');
+  const masked = text.replace(/[^\r\n]/g, ' ').split('');
+  for (const region of regions) {
+    for (let i = region.start; i < region.end; i++) masked[i] = text[i];
+    masked[region.start - region.delimiter] = '$';
+    if (region.closed) masked[region.end + region.delimiter - 1] = '$';
+  }
+  return { text: masked.join(''), regions };
+}
+
+function markdownMathDiagnostics(diagnostics, context) {
+  return diagnostics.flatMap(diagnostic => {
+    if (!completionRangeInside(diagnostic.range, { text: context.source, region: { start: 0, end: context.source.length } })) return [];
+    const first = positionOffset(context.source, diagnostic.range.start);
+    const last = positionOffset(context.source, diagnostic.range.end);
+    const region = context.regions.find(r => first <= r.end && last >= r.start) ||
+      context.regions.findLast(r => !r.closed && first >= r.end);
+    if (!region) return [];
+    const { relatedInformation, data, ...copy } = diagnostic;
+    return [{ ...copy, source: 'Typst math', range: {
+      start: positionAtOffset(context.source, Math.max(region.start, Math.min(region.end, first))),
+      end: positionAtOffset(context.source, Math.max(region.start, Math.min(region.end, last)))
+    } }];
+  });
+}
+
+function prepareMathCheck(uri, source, version) {
+  const previous = markdownChecks.get(uri);
+  if (previous) { checkOwners.delete(previous.uri); staleChecks.push(previous.uri); }
+  const check = { ...markdownMathCheck(source), source, original: uri, version,
+    uri: shadowUri(uri, `.zed-math-${++checkSequence}.typ`) };
+  markdownChecks.set(uri, check);
+  checkOwners.set(check.uri, check);
+  // Each revision has its own URI: even unversioned late compiler diagnostics are rejected.
+  sendMsg(process.stdout, { jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri, version, diagnostics: [] } });
+  sendMsg(child.stdin, { jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+    textDocument: { uri: check.uri, languageId: 'typst', version: 1, text: check.text }
+  } });
+  return decodeURIComponent(new URL(check.uri).pathname.split('/').at(-1));
 }
 
 function completionRangeInside(range, context) {
@@ -465,7 +555,8 @@ function completeMarkdown(msg) {
     });
     completionDocuments.set(uri, { text: projectedText, version });
   }
-  completionRequests.set(msg.id, { uri, version: markdownVersions.get(uri), text, region, position });
+  completionRequests.set(msg.id, { uri, version: markdownVersions.get(uri), text, region, position,
+    document: mathHistory.get(uri), history: mathHistory.context(uri, position, positionOffset(text, position)), markdown: true });
   sendMsg(child.stdin, { ...msg, params: { ...msg.params, textDocument: { uri: projectedUri } } });
 }
 
@@ -485,7 +576,7 @@ function handleMarkdownMessage(msg) {
     markdownVersions.set(doc.uri, doc.version);
     msg.params.textDocument = {
       uri: shadowUri(doc.uri), languageId: 'typst', version: doc.version,
-      text: markdownTypst(doc.text, doc.version)
+      text: markdownTypst(doc.text, doc.version, prepareMathCheck(doc.uri, doc.text, doc.version))
     };
     return false;
   }
@@ -493,12 +584,7 @@ function handleMarkdownMessage(msg) {
     let text = markdownDocuments.get(doc?.uri);
     if (text === undefined) return true;
     const before = text;
-    for (const change of msg.params.contentChanges) {
-      text = change.range
-        ? text.slice(0, positionOffset(text, change.range.start)) + change.text
-          + text.slice(positionOffset(text, change.range.end))
-        : change.text;
-    }
+    text = mathHistory.get(doc.uri)?.text ?? changedText(text, msg.params.contentChanges);
     markdownDocuments.set(doc.uri, text);
     markdownVersions.set(doc.uri, doc.version);
     const fraction = editFraction(before, text);
@@ -508,13 +594,19 @@ function handleMarkdownMessage(msg) {
     }
     msg.params = {
       textDocument: { uri: shadowUri(doc.uri), version: doc.version },
-      contentChanges: [{ text: markdownTypst(text, doc.version) }]
+      contentChanges: [{ text: markdownTypst(text, doc.version, prepareMathCheck(doc.uri, text, doc.version)) }]
     };
     return false;
   }
   if (method === 'textDocument/didClose') {
     if (!markdownDocuments.delete(doc?.uri)) return true;
     markdownVersions.delete(doc.uri);
+    const check = markdownChecks.get(doc.uri);
+    if (check) {
+      markdownChecks.delete(doc.uri); checkOwners.delete(check.uri);
+      sendMsg(child.stdin, { jsonrpc: '2.0', method: 'textDocument/didClose', params: { textDocument: { uri: check.uri } } });
+    }
+    sendMsg(process.stdout, { jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri: doc.uri, diagnostics: [] } });
     if (completionDocuments.delete(doc.uri)) {
       sendMsg(child.stdin, { jsonrpc: '2.0', method: 'textDocument/didClose',
         params: { textDocument: { uri: shadowUri(doc.uri, '.zed-completion.typ') } } });
@@ -587,6 +679,17 @@ new MessageReader(process.stdin, (msg) => {
     injectPreviewConfig(settings);
   }
 
+  observeMathDocument(msg);
+  if (msg.method === 'completionItem/resolve' && msg.params?.data?.typstPreviewMathHistory === true) {
+    sendMsg(process.stdout, { jsonrpc: '2.0', id: msg.id, result: msg.params });
+    return;
+  }
+  if (!markdownMode && msg.method === 'textDocument/completion') {
+    const uri = msg.params?.textDocument?.uri, position = msg.params?.position;
+    const doc = mathHistory.get(uri);
+    const history = doc && position && mathHistory.context(uri, position, positionOffset(doc.text, position));
+    if (history) completionRequests.set(msg.id, { uri, version: doc.version, text: doc.text, document: doc, history, markdown: false });
+  }
   if (markdownMode && handleMarkdownMessage(msg)) return;
 
   if (msg.method === 'textDocument/didOpen') {
@@ -644,6 +747,9 @@ new MessageReader(process.stdin, (msg) => {
   // Open/change must reach Tinymist before its compiler is focused on the virtual file.
   if (markdownMode && ['textDocument/didOpen', 'textDocument/didChange'].includes(msg.method)) {
     focusMarkdownPreview(msg.params.textDocument.uri);
+    for (const uri of staleChecks.splice(0)) {
+      sendMsg(child.stdin, { jsonrpc: '2.0', method: 'textDocument/didClose', params: { textDocument: { uri } } });
+    }
     if (msg.method === 'textDocument/didChange' && pendingMarkdownScroll) {
       clearTimeout(markdownScrollTimer);
       markdownScrollTimer = setTimeout(queryMarkdownScroll, 200);
@@ -653,12 +759,29 @@ new MessageReader(process.stdin, (msg) => {
 
 // Tinymist -> Zed
 new MessageReader(child.stdout, (msg) => {
-  if (completionRequests.has(msg.id)) {
+  if (markdownMode && msg.method === 'textDocument/publishDiagnostics') {
+    const check = checkOwners.get(msg.params?.uri);
+    if (check) sendMsg(process.stdout, { ...msg, params: {
+      uri: check.original, version: check.version,
+      diagnostics: markdownMathDiagnostics(msg.params.diagnostics || [], check)
+    } });
+    return;
+  }
+  if (!msg.method && completionRequests.has(msg.id)) {
     const context = completionRequests.get(msg.id);
     completionRequests.delete(msg.id);
-    const current = markdownVersions.get(context.uri) === context.version;
-    sendMsg(process.stdout, { jsonrpc: '2.0', id: msg.id,
-      result: current && !msg.error ? markdownCompletions(msg.result, context) : null });
+    const doc = mathHistory.get(context.uri);
+    const current = doc === context.document && doc?.version === context.version && doc?.text === context.text;
+    if (current && msg.error && !context.history?.items.length) {
+      sendMsg(process.stdout, context.markdown ? { jsonrpc: '2.0', id: msg.id, result: null } : msg);
+      return;
+    }
+    let result = null;
+    if (current) {
+      const upstream = msg.error ? null : context.markdown ? markdownCompletions(msg.result, context) : msg.result;
+      result = context.history ? mergeMathCompletions(upstream, context.history.items) : upstream;
+    }
+    sendMsg(process.stdout, { jsonrpc: '2.0', id: msg.id, result });
     return;
   }
   if (markdownScrollQueries.has(msg.id)) {

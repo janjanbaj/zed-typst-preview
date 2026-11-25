@@ -29,6 +29,12 @@ impl TinymistBinary {
         std::fs::write(&proxy_path, include_str!("../proxy.mjs"))
             .map_err(|e| format!("failed to write proxy.mjs: {e}"))?;
 
+        std::fs::write(
+            format!("{tinymist_dir}/math-history.mjs"),
+            include_str!("../math-history.mjs"),
+        )
+        .map_err(|e| format!("failed to write math-history.mjs: {e}"))?;
+
         // 2. Check user settings binary path
         let lsp_settings = zed::settings::LspSettings::for_worktree(language_server_id.as_ref(), worktree).ok();
         if let Some(user_bin) = lsp_settings

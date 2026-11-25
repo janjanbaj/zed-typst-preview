@@ -7,7 +7,8 @@
 | `extension.toml` | Registers Typst and Markdown preview language servers and the Typst grammar. |
 | `src/lib.rs` | Launches the Node proxy and supplies Tinymist settings. Adds `--markdown` for the Markdown server. |
 | `src/tinymist.rs` | Provisions Tinymist and writes the embedded proxy to the extension work directory. |
-| `proxy.mjs` | Handles JSON-RPC framing, preview configuration, virtual Markdown documents, and browser controls. |
+| `proxy.mjs` | Handles JSON-RPC framing, preview configuration, virtual Markdown documents, completions, and browser controls. |
+| `math-history.mjs` | Document-local math-term indexing, ranking, and completion edits for both server modes. |
 | `languages/typst/` | Typst language configuration, queries, and CLI export/watch tasks. |
 | `tests/markdown-preview.test.mjs` | Protocol tests with a fake Tinymist process. |
 
@@ -29,8 +30,8 @@ background preview and interrupt updates. When users provide both initialization
 options and settings, those values should agree.
 
 Extension work files live in Zed's managed extension work directory. The proxy
-is written there on every server startup so rebuilding the extension refreshes
-its embedded script. User settings and absolute machine paths are not part of
+and math-history module are written there on every server startup, so rebuilding
+the extension refreshes both embedded scripts. User settings and absolute machine paths are not part of
 the source repository.
 
 ## Markdown rendering
@@ -48,6 +49,13 @@ Incomplete headers, all backtick code fences, and headers later in the document 
 not executed. This allows `#let`, `#set`, and `#show` without interpreting ordinary
 Markdown as Typst. These declarations are used by the preamble; the math callback's
 `eval` does not automatically capture user-defined lexical variables.
+
+`normalizeMarkdownMathPadding` trims boundary whitespace only inside closed
+single-dollar math before cmarker runs. pulldown-cmark otherwise rejects padded
+inline delimiters. It reuses the region scanner, preserving headers, code,
+escaped dollars, incomplete regions, and display math. Original Markdown remains
+unchanged for completion/history/diagnostic UTF-16 coordinates. Single-dollar
+padding does not select block layout; double dollars still do.
 
 The wrapper calls cmarker 0.1.8 with `raw-typst: false`. A custom math callback
 uses `eval(source, mode: "math")` inside `math.equation`, taking inline/display
@@ -106,12 +114,35 @@ The region scanner deliberately supports common Markdown constructs, not a full
 Obsidian parser. Single-dollar regions stop at a newline; incomplete numeric
 expressions are treated conservatively as possible currency.
 
+## Source-mapped math diagnostics
+
+A sibling virtual `.zed-math-<sequence>.typ` checking file masks prose, headers,
+and code by UTF-16 code unit, retains math in its original positions, and
+normalizes double-dollar delimiters without shifting columns. The preview binds
+`include "<checking-file>"` to an unused local variable, so the same compiler
+checks this module without displaying its contents or moving the preview focus.
+Each equation is still rendered through cmarker's isolated math evaluator.
+There is no additional Tinymist process and no physical checking file.
+
+The checking file is opened before the preview update. Old checking files close
+after the new preview source reaches Tinymist. Unique revision URIs allow stale
+unversioned notifications to be rejected. `checkOwners` maps only current URIs
+back to original source/version. `markdownMathDiagnostics` accepts ranges in math,
+clamps delimiter/EOF errors to the region, and strips generated-file related info
+and data. Published reports use the original URI/version and `Typst math` source.
+Reports clear immediately on edits/close. All other generated diagnostics remain
+suppressed; this does not map header, image, package, or wrapper errors.
+
+The full suite includes an independent fake-server stale-report test. With
+`TINYMIST_TEST_BINARY` set, real checks assert callback counts/layout for padded
+math and error ranges from the pinned engine. Browser behavior remains user-tested.
+
 ## Isolation and navigation
 
 Markdown formatting and unsupported text-document requests are answered locally.
 Completion requests alone are projected and forwarded to Tinymist.
-Generated diagnostics and compile-status messages are suppressed; server-initiated
-edits, document opening, and dynamic registration are blocked. Preview clicks do
+Unmapped preview/completion diagnostics and compile-status messages are suppressed.
+Server-initiated edits, document opening, and dynamic registration are blocked. Preview clicks do
 not move the Markdown cursor. Edit-follow scrolling does not enable cursor-follow.
 
 Standalone Typst mode retains its existing behavior: highlight activity can
@@ -121,6 +152,31 @@ A short suppression interval prevents immediate cursor-follow bounceback.
 The proxy adds an Open in Browser code action in both modes. Typst also exposes
 Toggle Cursor Follow and Sync Cursor to Preview. Synthetic request IDs use the
 `tpp-` prefix; their responses must never be forwarded to Zed as client responses.
+
+## Math history completions
+
+`math-history.mjs` adapts the local Neovim math-history behavior without depending
+on Neovim or Lua. `MathHistory` retains original documents in either server mode,
+invalidates current regions on changes, and debounces term indexing for 180 ms.
+Markdown regions reuse `typstCompletionRegions`; standalone Typst uses a lexical
+dollar scanner supporting multiline math, nested block comments, strings and raw
+backticks. This is not a full Typst syntax tree; Markdown keeps its established
+parser exclusions. Indexing walks contiguous names, dotted fields, scripts and
+balanced simple calls. Limits: 96 bytes/term, 2,000 distinct terms/document,
+40 results/query, recursive group scans capped at depth 32. There is no disk index.
+
+The proxy merges history after Markdown edit sanitation or native Tinymist results,
+retaining upstream list defaults and snippets. History items have explicit UTF-16
+source edits, plain-text format, and a local resolve marker; resolve requests for
+these items return locally rather than reaching Tinymist. Suggestions can still
+be returned when Tinymist reports an error, provided local matches exist. Completion
+results check document identity/version/text so close/reopen cannot revive history.
+The index is discarded on close; no cross-document aggregation occurs.
+
+`tests/math-history.test.mjs` covers parsing/ranking/context/UTF-16/debounce;
+`tests/math-history-protocol.test.mjs` drives both proxy modes with a fake Tinymist.
+Rebuild WASM after changing either embedded JS module. Do not deploy proxy.mjs
+alone without its sibling math-history.mjs.
 
 ## Editor pairing setup
 
@@ -135,7 +191,14 @@ caret, and the extension API cannot register editor keybindings. Users merge thi
 optional configuration into their keymap. The context is limited to Markdown file
 extensions and excludes Vim normal mode. These are unconditional insertion snippets
 within those files; there is no syntax-aware closer skipping or selected-text wrap.
-Existing native Typst behavior is unchanged. Config JSON and tab-stop placement
+Native Typst pairing allows insertion before math and bracket closers through
+`autoclose_before` in `languages/typst/config.toml`, including nested calls.
+However, a separate installed Typst extension can own the language definition;
+choosing `tinymist-preview` does not change that ownership. The portable
+`config/typst-math-keymap.json` supplies provider-independent bracket snippets
+for `.typ`/`.typst` files (all syntax regions, insert/replace modes). It leaves
+native dollar/quote handling intact. Merge it into the user keymap; an extension
+cannot install these bindings automatically. Config JSON and tab-stop placement
 were checked; actual keypress behavior is a manual UI check.
 
 ## Verification and release preparation

@@ -1,0 +1,26 @@
+[
+  {
+    "context": "Editor && mode == full && (extension == typ || extension == typst) && (!vim_mode || vim_mode == insert || vim_mode == replace)",
+    "use_key_equivalents": true,
+    "bindings": {
+      "(": [
+        "editor::InsertSnippet",
+        {
+          "snippet": "(${1})$0"
+        }
+      ],
+      "[": [
+        "editor::InsertSnippet",
+        {
+          "snippet": "[${1}]$0"
+        }
+      ],
+      "{": [
+        "editor::InsertSnippet",
+        {
+          "snippet": "{${1}}$0"
+        }
+      ]
+    }
+  }
+]
