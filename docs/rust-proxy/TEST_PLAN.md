@@ -2,23 +2,11 @@
 
 ## 1. Test harness contract
 
-Keep the current Node suite as the behavior oracle. It exercises JS helpers, Node proxy stdio, and real Tinymist. Run the shared contract harness against the native executable for native evidence.
+Use the [README commands](../../README.md#test-the-native-rust-proxy) for the implemented harness. `PROXY_TEST_BINARY` selects the native executable. Without it, the shared subprocess tests select Node. `TINYMIST_TEST_BINARY` enables real-engine tests with the supplied executable. The JS-only helper tests continue to run in both modes as reference checks.
 
-Add `tests/proxy-contract.test.mjs` with these environment variables:
+The shared Unix process fixtures use independent LSP framing and isolated temporary directories. Node drives the tests in either mode. The native-specific suite checks malformed messages, both blocked pipe directions, and child cleanup. Rust tests exercise the state machine with a synthetic clock. Automatic browser opening is disabled during subprocess checks.
 
-- `PROXY_IMPLEMENTATION=node|native` (default `node`).
-- `PROXY_BIN`: required for native, absolute path to the built proxy executable.
-- `FAKE_TINYMIST_BIN`: required for shared integration scenarios, absolute path to the separately built fake child executable; honor `.exe` on Windows.
-- `REAL_TINYMIST_BIN`: optional explicit path for real-engine checks; otherwise skip those checks with a clear reason, not a passing result.
-- `TYPST_PACKAGE_CACHE_PATH`: optional test package cache; never overwrite the user's cache/settings.
-
-Node adapter spawns `node proxy.mjs FAKE_TINYMIST_BIN [--markdown]`; native adapter spawns `PROXY_BIN --tinymist FAKE_TINYMIST_BIN [--markdown]`. The fake child accepts an optional `lsp` argument. It uses independently implemented framing, scripted responses, a test-owned JSONL event log, configurable delays, and scenarios for malformed output/backpressure/exit. It never launches a browser and is not a release artifact.
-
-Use unique temporary directories, URI-encode paths, and remove only test-owned artifacts. The fake process must be stopped/reaped in teardown even if an assertion fails. Pass `previewProxy.openBrowser = false`; test browser/jump effects directly against Engine and argument builders. Do not operate the user's running Zed, browser, extension files, or global keymap.
-
-Normalize only nondeterministic ports, private remapped request IDs, and elapsed timestamps when comparing JS/native traces. Do not normalize source positions, command names/arguments, edits, versions, order, errors, capability fields, or document lifetime behavior. Preserve one reply per request and destination ordering.
-
-A small fixture set under `tests/fixtures/rust-proxy/` is shared by Rust and Node where practical. Golden outputs originate from the frozen JS helpers plus manually reviewed expectations, not from whichever new implementation is under test. Rust property/roundtrip tests supplement goldens rather than merely repeating the implementation.
+The scenario matrix below also lists extended acceptance cases for a future default switch. See the [macOS results](results/macos-arm64.md) for the shorter completed benchmark and its scope.
 
 ## 2. Required scenario matrix
 

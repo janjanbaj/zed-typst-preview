@@ -1,11 +1,10 @@
+import { spawnProxy, stopProxy } from './proxy-launch.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 for (const markdown of [false, true]) {
   test(`${markdown ? 'Markdown' : 'Typst'} history travels through real proxy stdio`, { timeout: 12000 }, async t => {
@@ -14,7 +13,7 @@ for (const markdown of [false, true]) {
     const fake = path.join(dir, 'fake.mjs');
     writeFileSync(fake, `#!/usr/bin/env node
 import fs from 'node:fs';
-let buffer=Buffer.alloc(0);
+let buffer=Buffer.alloc(0), completionCount=0;
 const send=m=>{const body=Buffer.from(JSON.stringify(m));process.stdout.write(Buffer.concat([Buffer.from('Content-Length: '+body.length+'\\r\\n\\r\\n'),body]));};
 process.stdin.on('end',()=>process.exit(0));
 process.stdout.on('error',()=>process.exit(0));
@@ -27,13 +26,13 @@ process.stdin.on('data',chunk=>{
   const m=JSON.parse(buffer.subarray(start+4,start+4+length));buffer=buffer.subarray(start+4+length);
   fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(m)+'\\n');
   if(m.method==='initialize')send({jsonrpc:'2.0',id:m.id,result:{capabilities:{textDocumentSync:2,completionProvider:{resolveProvider:true}}}});
-  else if(m.method==='textDocument/completion')setTimeout(()=>send({jsonrpc:'2.0',id:m.id,...(m.id===11?{error:{code:-32603,message:'compile error'}}:{result:{items:[{label:'frac',insertText:'frac(1, 2)'}]}})}),60);
+  else if(m.method==='textDocument/completion'){const fail=++completionCount===2;setTimeout(()=>send({jsonrpc:'2.0',id:m.id,...(fail?{error:{code:-32603,message:'compile error'}}:{result:{items:[{label:'frac',insertText:'frac(1, 2)'}]}})}),60);}
   else if(m.method==='completionItem/resolve')send({jsonrpc:'2.0',id:m.id,error:{code:-32603,message:'history should not resolve here'}});
   else if(m.id!==undefined)send({jsonrpc:'2.0',id:m.id,result:null});
  }
 });
 `, { mode: 0o755 });
-    const child = spawn(process.execPath, [fileURLToPath(new URL('../proxy.mjs', import.meta.url)), fake, ...(markdown ? ['--markdown'] : [])]);
+    const child = spawnProxy(fake, markdown);
     let output = Buffer.alloc(0), stderr = '';
     const messages = [];
     const exited = once(child, 'exit');
@@ -48,7 +47,7 @@ process.stdin.on('data',chunk=>{
         output = output.subarray(start + 4 + length);
       }
     });
-    t.after(async () => { child.stdin.end(); child.kill(); await exited; rmSync(dir, { recursive: true, force: true }); });
+    t.after(async () => { stopProxy(child); await exited; rmSync(dir, { recursive: true, force: true }); });
     const send = message => {
       const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', ...message }));
       child.stdin.write(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]));
@@ -81,7 +80,7 @@ process.stdin.on('data',chunk=>{
     assert.equal(result.isIncomplete, true);
     send({ id: 12, method: 'completionItem/resolve', params: item });
     assert.deepEqual((await answer(12)).result, item);
-    assert.ok(!records().some(m => m.id === 12));
+    assert.ok(!records().some(m => m.method === 'completionItem/resolve'));
     request(11);
     assert.ok((await answer(11)).result.items.some(i => i.label === 'alpha_i'));
     // Incremental UTF-16 edit: al -> ca, with an emoji earlier on the same line.
@@ -90,7 +89,7 @@ process.stdin.on('data',chunk=>{
     assert.ok((await answer(13)).result.items.some(i => i.label === 'cal(H)'));
     // A late result cannot leak the previous document's history into a reopened version 1.
     request(14);
-    await until(() => records().some(m => m.id === 14));
+    await until(() => records().filter(m => m.method === 'textDocument/completion').length === 4);
     close(); open('No old symbols\r\n😀 $al$', 1);
     assert.equal((await answer(14)).result, null);
     request(15);

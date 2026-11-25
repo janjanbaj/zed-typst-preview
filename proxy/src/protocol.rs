@@ -120,7 +120,18 @@ impl FrameDecoder {
     }
 
     // The caller must close the transport on any decode error.
-    pub fn push(&mut self, mut bytes: &[u8]) -> Result<Vec<Message>, ProtocolError> {
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Message>, ProtocolError> {
+        Ok(self
+            .push_sized(bytes)?
+            .into_iter()
+            .map(|(_, msg)| msg)
+            .collect())
+    }
+
+    pub(crate) fn push_sized(
+        &mut self,
+        mut bytes: &[u8],
+    ) -> Result<Vec<(usize, Message)>, ProtocolError> {
         let mut messages = Vec::new();
         while !bytes.is_empty() {
             if let Some(len) = self.body_len {
@@ -133,7 +144,7 @@ impl FrameDecoder {
                     let message =
                         serde_json::from_slice(&body).map_err(|_| ProtocolError::InvalidJson)?;
                     validate_envelope(&message)?;
-                    messages.push(message);
+                    messages.push((len, message));
                 }
             } else {
                 self.buffer.push(bytes[0]);

@@ -239,6 +239,85 @@ it is ignored for Markdown. `previewProxy.mode` accepts `document` or `slide`.
 Use the same values in `settings` and `initialization_options` if supplying both.
 A custom Tinymist executable can be selected through the server's `binary.path`.
 
+## Test the native Rust proxy
+
+From the repository root, with `rust-proxy` checked out:
+
+```sh
+rustup target add wasm32-wasip1
+cargo build -p typst-preview-proxy --release --locked
+cargo build -p zed-typst-preview --release --target wasm32-wasip1 --locked
+cp target/wasm32-wasip1/release/zed_typst_preview.wasm extension.wasm
+printf '%s\n' "$PWD/target/release/typst-preview-proxy"
+```
+
+In your Zed **user settings**, merge the following under the existing `lsp`
+object. Replace both paths with the printed absolute path. On Windows use
+the `.exe` suffix and escape backslashes in JSON. Keep the language server
+selection from [Installation](#installation).
+
+```json
+{
+  "lsp": {
+    "markdown-typst-preview": {
+      "settings": {
+        "previewProxy": {
+          "nativePath": "/absolute/path/to/target/release/typst-preview-proxy"
+        }
+      }
+    },
+    "tinymist-preview": {
+      "settings": {
+        "previewProxy": {
+          "nativePath": "/absolute/path/to/target/release/typst-preview-proxy"
+        }
+      }
+    }
+  }
+}
+```
+
+Use **Install Dev Extension** if this checkout is new to Zed. Run **`zed: reload
+extensions`**, then **`editor: restart language server`** for each open language
+or fully quit and relaunch Zed. On macOS run the following after opening a
+Markdown or Typst file to confirm which process started.
+
+```sh
+pgrep -fl typst-preview-proxy
+```
+
+1. Open `examples/math.md` and `examples/styled.md`. Check that the light
+   preview follows typing and switches to the other document in the same
+   browser tab. Move the cursor once when returning to an unchanged tab.
+2. Edit a heading or equation without saving. Check the preview refresh and
+   approximate scroll to the edit. Close the browser tab and use **Cmd+. →
+   Markdown Typst Preview: Open in Browser** to reopen it.
+3. Inside `$fr$`, put the cursor before the final dollar and invoke completion.
+   Accept `frac`. Try a partial name inside the header as well. Add
+   `$alpha_i$` elsewhere in the same file, then request completion inside
+   `$al$` to check math history.
+4. Add `$ nosuchsymbol $`. Expect a **Typst math** diagnostic on the name.
+   Replace it with `alpha` and check that the diagnostic clears.
+5. Open a standalone Typst file. Test cursor following and click the preview
+   to jump back to the source. Quit Zed and check that the associated
+   native proxy and Tinymist processes exit.
+
+To switch back, remove the two `nativePath` entries and restart the language
+servers. The extension uses Node when no native path is configured.
+
+Run the terminal checks with:
+
+```sh
+cargo test -p typst-preview-proxy --locked
+PROXY_TEST_BINARY="$PWD/target/release/typst-preview-proxy" \
+  TINYMIST_TEST_BINARY="/absolute/path/to/tinymist" \
+  node --test tests/*.test.mjs
+```
+
+Use Tinymist 0.14.10 for the integration checks. The shared subprocess tests
+use Unix executables with shebangs. macOS is the tested platform for this
+native setup.
+
 ## Limitations
 
 - Edit-follow scrolling estimates position from source length and rendered
@@ -275,7 +354,7 @@ when the variable is absent.
 [Architecture and maintenance notes](HANDOFF.md) explain the implementation.
 [Work log](docs/WORK_LOG.md) records changes and validation.
 [Native Rust proxy handoff](docs/rust-proxy/README.md) contains the proposed
-migration contracts, implementation tasks, and adversarial review.
+migration design, implementation status, test evidence, and adversarial review.
 
 ## Sharing and attribution
 

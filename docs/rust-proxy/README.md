@@ -1,6 +1,8 @@
 # Rust proxy handoff
 
-**Status:** packet A is implemented. The native crate provides CLI parsing and an LSP frame codec. Running a server session requires the process and routing layers.
+**Status:** the native driver, Markdown/Typst routing, document transforms, and Zed launcher are implemented. Use the [native setup and test checklist](../../README.md#test-the-native-rust-proxy). Local selection is opt-in through `previewProxy.nativePath`.
+
+Terminal acceptance on macOS ARM64 used Tinymist 0.14.10. The native executable passed 14 Rust tests and all 32 Node-run regression and process tests, including live diagnostics and completions. The Node fallback passed its 28 applicable tests. Zed UI and other platforms remain unverified. The planning documents below describe the original architecture and release gates. [macOS memory and latency trial](results/macos-arm64.md)
 
 - Current behavior baseline: `ecd7898` (`main`), merged into `rust-proxy` in `8710f70`.
 - Original plan and audit baseline: `0a366d8`. See the [baseline update](#baseline-update) before using the older line references.

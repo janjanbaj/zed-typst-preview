@@ -180,7 +180,7 @@ fn binary_reports_help_version_and_exit_status() {
     assert_eq!(invalid.status.code(), Some(2));
     assert!(invalid.stdout.is_empty());
 
-    let unfinished = run(&["--tinymist", "unused"]);
-    assert_eq!(unfinished.status.code(), Some(1));
-    assert!(unfinished.stdout.is_empty());
+    let missing_child = run(&["--tinymist", "./nonexistent-tinymist-test-binary"]);
+    assert_eq!(missing_child.status.code(), Some(1));
+    assert!(missing_child.stdout.is_empty());
 }

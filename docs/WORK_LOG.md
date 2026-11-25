@@ -156,3 +156,9 @@ on `main`; the `rust-proxy` planning branch is unchanged. No push was performed.
 Merged `main` through `ecd7898` into `rust-proxy` and updated the parity requirements for math history, padded formulas, and mapped diagnostics. Added the host-only native crate, argument parser, bounded LSP frame decoder, and typed request IDs. Running an LSP session still requires the process and routing layers.
 
 Validation passed for all 27 Node tests with Tinymist 0.14.10, eight native foundation tests, native Clippy and formatting, and the locked WASI release build.
+
+## Native proxy implementation and opt-in test
+
+Ported the document transforms, math history, diagnostics, request routing, preview controls, and subprocess runtime to the native crate. The Zed launcher accepts a per-server absolute `previewProxy.nativePath`. The README has the build, settings, UI checklist, and rollback steps.
+
+On macOS ARM64, 14 Rust tests and 32 Node-run tests of the native release passed with Tinymist 0.14.10. The Node fallback passed 28 applicable tests. Clippy and the locked WASI release build passed. Five paired runs measured median idle proxy RSS of 3.1 MiB for Rust and 69.9 MiB for Node, with comparable loopback HTTP readiness. The [benchmark report](rust-proxy/results/macos-arm64.md) separates proxy and Tinymist memory. Zed UI and other platforms remain unverified.

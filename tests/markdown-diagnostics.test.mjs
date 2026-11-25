@@ -1,11 +1,11 @@
+import { spawnProxy, stopProxy } from './proxy-launch.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 async function session(t, real = false) {
   const dir = mkdtempSync(path.join(tmpdir(), 'markdown-diagnostics-'));
@@ -30,7 +30,7 @@ process.stdin.on('data',chunk=>{buffer=Buffer.concat([buffer,chunk]);while(true)
  }
 }});
 `, { mode: 0o755 });
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../proxy.mjs', import.meta.url)), real ? process.env.TINYMIST_TEST_BINARY : fake, '--markdown']);
+  const child = spawnProxy(real ? process.env.TINYMIST_TEST_BINARY : fake, true);
   const exited = once(child, 'exit');
   let buffer = Buffer.alloc(0), stderr = '';
   const messages = [];
@@ -52,7 +52,7 @@ process.stdin.on('data',chunk=>{buffer=Buffer.concat([buffer,chunk]);while(true)
         result: message.method === 'workspace/configuration' ? message.params.items.map(() => ({})) : null });
     }
   });
-  t.after(async () => { child.stdin.end(); child.kill(); await exited; rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => { stopProxy(child); await exited; rmSync(dir, { recursive: true, force: true }); });
   const until = async predicate => {
     for (let i = 0; i < 300; i++) {
       if (predicate()) return;
@@ -70,7 +70,14 @@ process.stdin.on('data',chunk=>{buffer=Buffer.concat([buffer,chunk]);while(true)
   const change = (text, version) => send({ method: 'textDocument/didChange', params: { textDocument: { uri, version }, contentChanges: [{ text }] } });
   const close = () => send({ method: 'textDocument/didClose', params: { textDocument: { uri } } });
   const reports = () => messages.filter(m => m.method === 'textDocument/publishDiagnostics').map(m => m.params);
-  return { uri, open, change, close, reports, until };
+  const completion = async (line, character) => {
+    const id = 17;
+    const before = messages.length;
+    send({ id, method: 'textDocument/completion', params: { textDocument: { uri }, position: { line, character } } });
+    await until(() => messages.slice(before).some(m => !m.method && m.id === id));
+    return messages.slice(before).find(m => !m.method && m.id === id).result;
+  };
+  return { uri, open, change, close, reports, until, completion };
 }
 
 test('Markdown diagnostics map to source, clear on edits, and reject unversioned obsolete reports', { timeout: 12000 }, async t => {
@@ -111,5 +118,21 @@ test('real Tinymist underlines bad padded math in Markdown and clears it when co
   await s.until(() => s.reports().some(r => r.version === 2 && r.diagnostics.length));
   s.change('😀 before $ H(t) $ after', 3);
   await s.until(() => s.reports().some(r => r.version === 3 && !r.diagnostics.length));
+  s.close();
+});
+
+test('real Tinymist completes Markdown math and header declarations with original edits', {
+  timeout: 15000, skip: !process.env.TINYMIST_TEST_BINARY && 'Set TINYMIST_TEST_BINARY for real completion'
+}, async t => {
+  const s = await session(t, true);
+  s.open('"""\n#let example-value = 12pt\n#set text(size: example)\n"""\n😀 $fr$');
+  const header = await s.completion(2, 23);
+  const math = await s.completion(4, 6);
+  const declared = header?.items.find(item => item.label === 'example-value');
+  const fraction = math?.items.find(item => item.label === 'frac');
+  assert.ok(declared, JSON.stringify(header)?.slice(0, 500));
+  assert.ok(fraction, JSON.stringify(math)?.slice(0, 500));
+  assert.deepEqual(fraction.textEdit.range.start, { line: 4, character: 4 });
+  assert.deepEqual(fraction.textEdit.range.end, { line: 4, character: 6 });
   s.close();
 });
