@@ -76,6 +76,14 @@ source-sharing exclusions and preserved the MIT notice for the Typst grammar que
 Local compiled artifacts and reference checkouts are not included in the source archive.
 
 
+## Native Rust proxy planning
+
+- Froze the working extension at `0a366d8` on `main`; created `rust-proxy` for the migration.
+- Added the [handoff package](rust-proxy/README.md): architecture, Rust interfaces, wire contracts, scoped task packets, tests, benchmark gates, and adversarial audit. No native proxy implementation or default launcher change was made.
+- Two fake-server probes confirmed baseline request-ID collision and close/reopen stale-completion risks; the native contract requires fixes and regressions.
+- Baseline checks passed: nine Node tests, Node syntax, diff whitespace, and release WASI build. No changes were pushed.
+
+
 ## Typst nested bracket pairing
 
 Added native `autoclose_before` characters for math and bracket closers. Local
@@ -142,3 +150,15 @@ Committed the Typst pairing changes separately from the document-local history,
 padded-math rendering, and mapped math diagnostics. README, HANDOFF, and this log
 record usage, architecture, validation, and current diagnostic limits. Work stays
 on `main`; the `rust-proxy` planning branch is unchanged. No push was performed.
+
+## Native proxy foundation
+
+Merged `main` through `ecd7898` into `rust-proxy` and updated the parity requirements for math history, padded formulas, and mapped diagnostics. Added the host-only native crate, argument parser, bounded LSP frame decoder, and typed request IDs. Running an LSP session still requires the process and routing layers.
+
+Validation passed for all 27 Node tests with Tinymist 0.14.10, eight native foundation tests, native Clippy and formatting, and the locked WASI release build.
+
+## Native proxy implementation and opt-in test
+
+Ported the document transforms, math history, diagnostics, request routing, preview controls, and subprocess runtime to the native crate. The Zed launcher accepts a per-server absolute `previewProxy.nativePath`. The README has the build, settings, UI checklist, and rollback steps.
+
+On macOS ARM64, 14 Rust tests and 32 Node-run tests of the native release passed with Tinymist 0.14.10. The Node fallback passed 28 applicable tests. Clippy and the locked WASI release build passed. Five paired runs measured median idle proxy RSS of 3.1 MiB for Rust and 69.9 MiB for Node, with comparable loopback HTTP readiness. The [benchmark report](rust-proxy/results/macos-arm64.md) separates proxy and Tinymist memory. Zed UI and other platforms remain unverified.

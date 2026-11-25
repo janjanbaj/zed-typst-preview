@@ -1,3 +1,4 @@
+import { spawnProxy, stopProxy } from './proxy-launch.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -221,6 +222,7 @@ process.stdin.on('data', chunk => {
   if (buffer.length < i+4+n) break;
   const m = JSON.parse(buffer.subarray(i+4,i+4+n)); buffer=buffer.subarray(i+4+n);
   fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(m)+'\\n');
+  if (m.params?.command === 'tinymist.focusMain' || m.params?.command === 'tinymist.scrollPreview') send({jsonrpc:'2.0', id:m.id,result:null});
   if (m.method === 'initialize') send({jsonrpc:'2.0',id:m.id,result:{capabilities:{documentFormattingProvider:true,definitionProvider:true}}});
   if (m.method === 'textDocument/didOpen') documents.set(m.params.textDocument.uri, m.params.textDocument.text);
   if (m.method === 'textDocument/didChange') documents.set(m.params.textDocument.uri, m.params.contentChanges[0].text);
@@ -247,7 +249,7 @@ process.stdin.on('data', chunk => {
  }
 });
 `, { mode: 0o755 });
-  const child = spawn(process.execPath, [new URL('../proxy.mjs', import.meta.url).pathname, fake, '--markdown']);
+  const child = spawnProxy(fake, true);
   let output = Buffer.alloc(0), stderr = '';
   const messages = [];
   child.stderr.on('data', c => stderr += c);
@@ -260,7 +262,11 @@ process.stdin.on('data', chunk => {
       messages.push(JSON.parse(output.subarray(i+4,i+4+n))); output = output.subarray(i+4+n);
     }
   });
-  t.after(() => { child.stdin.end(); child.kill(); rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => {
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    if (child.exitCode === null && child.signalCode === null) { stopProxy(child); await exited; }
+    rmSync(dir, { recursive: true, force: true });
+  });
   const send = msg => { const b=Buffer.from(JSON.stringify({jsonrpc:'2.0',...msg})); child.stdin.write(Buffer.concat([Buffer.from(`Content-Length: ${b.length}\r\n\r\n`),b])); };
   const until = async predicate => {
     for (let i=0;i<200;i++) { if (predicate()) return; await new Promise(r=>setTimeout(r,20)); }
@@ -298,8 +304,9 @@ process.stdin.on('data', chunk => {
   assert.equal(open.languageId,'typst');
   assert.ok(open.text.includes('@preview/cmarker:0.1.8'));
   const changes=records.filter(m=>m.method==='textDocument/didChange');
-  assert.equal(changes[0].params.contentChanges[0].text,markdownTypst('😀 $y^2$\r\nnext',2,'notes space.md.zed-math-2.typ'));
-  assert.equal(changes[1].params.contentChanges[0].text,markdownTypst('# Changed\n$$frac(1, 2)$$',3,'notes space.md.zed-math-3.typ'));
+  const checkName = index => decodeURIComponent(records.filter(m=>m.method==='textDocument/didOpen' && /\.zed-math-\d+\.typ$/.test(m.params.textDocument.uri))[index].params.textDocument.uri.split('/').at(-1));
+  assert.equal(changes[0].params.contentChanges[0].text,markdownTypst('😀 $y^2$\r\nnext',2,checkName(1)));
+  assert.equal(changes[1].params.contentChanges[0].text,markdownTypst('# Changed\n$$frac(1, 2)$$',3,checkName(2)));
   assert.equal(records.find(m=>m.id==='jump').result.success,false);
   assert.equal(records.find(m=>m.id==='edit').result.applied,false);
   assert.equal(messages.find(m=>m.id===2).result,null);
@@ -345,17 +352,17 @@ process.stdin.on('data', chunk => {
   assert.equal(answer.items[0].label,'frac');
   assert.equal(answer.items[0].textEdit.range.start.character,6);
   assert.equal(answer.items[0].data,undefined);
-  const completionRequest=recorded().find(m=>m.id===20);
+  const completionRequest=recorded().find(m=>m.method==='textDocument/completion');
   assert.equal(completionRequest.params.textDocument.uri,uri+'.zed-completion.typ');
   const completionOpen=recorded().find(m=>m.method==='textDocument/didOpen' && m.params.textDocument.uri.endsWith('.zed-completion.typ'));
   assert.equal(completionOpen.params.textDocument.text,'     $fr$     ');
   send({id:21,method:'textDocument/completion',params:{textDocument:{uri},position:{line:0,character:2}}});
   await until(()=>messages.some(m=>m.id===21));
   assert.equal(messages.find(m=>m.id===21).result,null);
-  assert.ok(!recorded().some(m=>m.id===21));
+  assert.ok(recorded().filter(m=>m.method==='textDocument/completion').length===1);
 
   send({id:22,method:'textDocument/completion',params:{textDocument:{uri},position:{line:0,character:8}}});
-  await until(()=>recorded().some(m=>m.id===22));
+  await until(()=>recorded().filter(m=>m.method==='textDocument/completion').length===2);
   send({method:'textDocument/didChange',params:{textDocument:{uri,version:7},contentChanges:[{text:'Updated $sq$'}]}});
   await until(()=>messages.some(m=>m.id===22));
   assert.equal(messages.find(m=>m.id===22).result,null);

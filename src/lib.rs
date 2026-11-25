@@ -1,5 +1,6 @@
 use zed_extension_api::{self as zed, LanguageServerId, Result, Worktree};
 
+mod proxy;
 mod tinymist;
 use tinymist::TinymistBinary;
 
@@ -34,18 +35,7 @@ impl zed::Extension for TypstPreviewExtension {
         worktree: &Worktree,
     ) -> Result<zed::Command> {
         let (proxy_path, tinymist_bin) = self.tinymist.ensure(language_server_id, worktree)?;
-        let node_path = zed::node_binary_path()?;
-
-        let mut args = vec![proxy_path, tinymist_bin];
-        if language_server_id.as_ref() == "markdown-typst-preview" {
-            args.push("--markdown".into());
-        }
-
-        Ok(zed::Command {
-            command: node_path,
-            args,
-            env: worktree.shell_env(),
-        })
+        proxy::command(language_server_id, worktree, proxy_path, tinymist_bin)
     }
 
     fn language_server_initialization_options(
@@ -66,10 +56,11 @@ impl zed::Extension for TypstPreviewExtension {
         language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> Result<Option<serde_json::Value>> {
-        let config = zed::settings::LspSettings::for_worktree(language_server_id.as_ref(), worktree)
-            .ok()
-            .and_then(|lsp| lsp.settings.or(lsp.initialization_options))
-            .unwrap_or_else(default_tinymist_settings);
+        let config =
+            zed::settings::LspSettings::for_worktree(language_server_id.as_ref(), worktree)
+                .ok()
+                .and_then(|lsp| lsp.settings.or(lsp.initialization_options))
+                .unwrap_or_else(default_tinymist_settings);
 
         Ok(Some(config))
     }
