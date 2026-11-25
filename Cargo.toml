@@ -15,3 +15,8 @@ serde_json = "1.0"
 opt-level = "z"
 lto = true
 strip = true
+
+[workspace]
+members = [".", "proxy"]
+default-members = ["."]
+resolver = "2"

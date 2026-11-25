@@ -2,7 +2,7 @@
 
 ## Shared instructions — prepend to every task
 
-You implement a bounded part of a native Rust replacement for the Node proxy. Work on `rust-proxy`, based on `0a366d8`. Read `docs/rust-proxy/API_CONTRACT.md` and the specific source sections below. Do not scan the whole repository or generated/reference directories. The coordinating agent is the architect/reviewer; ask it to approve contract changes.
+You implement a bounded part of a native Rust replacement for the Node proxy. Work on `rust-proxy`. Read the [baseline update](README.md#baseline-update) for the new parity requirements from `main`. The original packet line references use `0a366d8`. Read `docs/rust-proxy/API_CONTRACT.md` and the specific source sections below. Do not scan the whole repository or generated/reference directories. The coordinating agent is the architect/reviewer; ask it to approve contract changes.
 
 You are not alone in the codebase. Do not revert other work, delete the JS oracle, modify files outside your ownership, weaken tests, update dependencies opportunistically, alter global Zed settings, replace the installed WASM, publish artifacts, or push branches. If shared scaffolding changes are needed, coordinate them. Prefer sequential task handoffs; the listed packets are not permission to concurrently edit shared files.
 

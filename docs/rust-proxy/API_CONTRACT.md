@@ -1,6 +1,6 @@
 # Rust proxy API and wire contract
 
-These are **proposed interfaces to implement**, not APIs already present in the repository. Keep signatures stable across agent tasks; coordinate changes with the architect. Private helpers may differ. Baseline: `0a366d8`.
+These are **proposed interfaces to implement**, not APIs already present in the repository. Keep signatures stable across agent tasks; coordinate changes with the architect. Private helpers may differ. Original reference baseline: `0a366d8`. The [baseline update](README.md#baseline-update) adds parity requirements from `ecd7898`.
 
 ## A. Executables and endpoints
 
@@ -93,7 +93,7 @@ pub struct Header {
 }
 pub fn header_bounds(text: &str) -> Option<Header>;
 pub fn typst_string(text: &str) -> String;
-pub fn render_markdown(text: &str, version: i64) -> String;
+pub fn render_markdown(text: &str, version: i64, check_file: Option<&str>) -> String;
 pub fn shadow_uri(original: &Url, suffix: &str) -> Result<Url, ProtocolError>;
 pub fn apply_changes(text: &str, changes: &serde_json::Value)
     -> Result<String, ProtocolError>;
@@ -145,7 +145,7 @@ Projection copies only the selected region. Other source characters become space
 
 Header projection preserves declarations in that header. Math projection omits header declarations, matching the renderer's separate `eval` scope. Do not suggest header-defined math macros that the actual preview cannot evaluate.
 
-Accept array/CompletionList responses. Expand itemDefaults.editRange, retain snippet format/mode/commit characters, handle both TextEdit and InsertReplaceEdit, and reject a candidate if any necessary edit is outside the active region or has invalid coordinates. Strip command/data, advertise resolveProvider false, and correct quoted font insertions by replacing the active header string with the quoted selected label using plain-text insertion format 1. Do not send completionItem/resolve to generated documents in Markdown mode.
+Accept array/CompletionList responses. Expand itemDefaults.editRange, retain snippet format/mode/commit characters, handle both TextEdit and InsertReplaceEdit, and reject a candidate if any necessary edit is outside the active region or has invalid coordinates. Strip command/data, advertise resolveProvider false, and correct quoted font insertions by replacing the active header string with the quoted selected label using plain-text insertion format 1. Handle locally marked math-history items on completionItem/resolve and preserve their source edit. Do not send completionItem/resolve to generated documents in Markdown mode.
 
 Keep one completion projection/revision per open Markdown document. Reuse it if unchanged. Before first projection opening, the preview must already have received its open/focus messages; Tinymist's manual focus must not be stolen by projection activity.
 
@@ -204,7 +204,7 @@ Markdown forces UTF-16 in both the child initialization negotiation and the capa
 | Input | Markdown mode | Typst mode |
 |---|---|---|
 | didOpen/change/close | Maintain original snapshot, forward sibling preview document; focus after open/change; close completion sibling too | Forward |
-| completion | Detect region; synchronize completion sibling before request; sanitize result | Forward |
+| completion | Detect region; synchronize completion sibling before request; sanitize result and merge local math history | Forward and merge local math history in math contexts |
 | documentHighlight | Select document; return `[]`, no cursor navigation | Forward and potentially emit cursor-follow controls |
 | codeAction | Local Open in Browser item | Forward, append existing three actions on its matching response |
 | executeCommand: typst-preview.open | Local OpenBrowser effect, null result | Same |
@@ -217,7 +217,7 @@ A completion request is not a new browser-open trigger. The first document open 
 
 ### Server routing
 
-Markdown suppresses textDocument/publishDiagnostics, tinymist/compileStatus, and tinymist/preview/scrollSource. For server requests window/showDocument return `{ "success": false }`; workspace/applyEdit return `{ "applied": false }`; client/registerCapability return null. Notifications of those names are ignored without generating a response. This must happen by message kind/direction, not by an overlapping client request ID.
+Markdown republishes diagnostics from the current math-check module at the original URI/version, with mapped math ranges. It suppresses other generated diagnostics, tinymist/compileStatus, and tinymist/preview/scrollSource. For server requests window/showDocument return `{ "success": false }`; workspace/applyEdit return `{ "applied": false }`; client/registerCapability return null. Notifications of those names are ignored without generating a response. This must happen by message kind/direction, not by an overlapping client request ID.
 
 Typst preview source jumps and file window/showDocument use a JumpSource effect with one-based CLI line/column. Preserve the original server request's result handling and start a 350 ms follow suppression window. Non-file showDocument requests pass through.
 

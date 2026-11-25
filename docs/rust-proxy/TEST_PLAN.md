@@ -2,7 +2,7 @@
 
 ## 1. Test harness contract
 
-Keep `tests/markdown-preview.test.mjs` unchanged as the JS regression/oracle suite. Its first eight tests call JS helpers directly; its integration test spawns Node. It is not proof of native functionality.
+Keep the current Node suite as the behavior oracle. It exercises JS helpers, Node proxy stdio, and real Tinymist. Run the shared contract harness against the native executable for native evidence.
 
 Add `tests/proxy-contract.test.mjs` with these environment variables:
 
@@ -50,6 +50,9 @@ A small fixture set under `tests/fixtures/rust-proxy/` is shared by Rust and Nod
 | C06 | P | Font completion in complete/unfinished quoted string | Replace string cleanly with quoted selected label, insertTextFormat 1 |
 | C07 | H | Two completions for one unchanged source version but different regions/projection revisions | Newer request supersedes older safely; old result cannot insert in wrong region |
 | C08 | H | Fast edits while child responses lag | Old snapshots released on cancellation/retirement, not only after eventual replies |
+| C09 | P | Both language modes request document-local history with built-in completions and resolve a local item | Ranked history plus deduplicated upstream items, UTF-16 source edits, local resolve, no cross-document terms |
+| D07 | P | Closed padded inline math beside code and display math | Only the rendered inline formula is trimmed; original source and completion positions survive |
+| I02 | P | Invalid padded formula, correction, late unversioned report, and close | Current reports map to original Markdown UTF-16 ranges; empty results clear old errors; old virtual URIs cannot republish them |
 | P01 | P | Flat/nested initialize/config notification/configuration response | Stable same-port preview injection; unrelated settings survive |
 | P02 | P | openBrowser false, later manual Open action, repeated opens | No automatic OS launch when disabled; one auto-open schedule; manual action targets dynamic port |
 | P03 | P | A → B → A activity, same line number, completion virtual-file opening | Same preview server follows correct preview file; completion file never takes over |

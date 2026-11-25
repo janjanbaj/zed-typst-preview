@@ -150,3 +150,9 @@ Committed the Typst pairing changes separately from the document-local history,
 padded-math rendering, and mapped math diagnostics. README, HANDOFF, and this log
 record usage, architecture, validation, and current diagnostic limits. Work stays
 on `main`; the `rust-proxy` planning branch is unchanged. No push was performed.
+
+## Native proxy foundation
+
+Merged `main` through `ecd7898` into `rust-proxy` and updated the parity requirements for math history, padded formulas, and mapped diagnostics. Added the host-only native crate, argument parser, bounded LSP frame decoder, and typed request IDs. Running an LSP session still requires the process and routing layers.
+
+Validation passed for all 27 Node tests with Tinymist 0.14.10, eight native foundation tests, native Clippy and formatting, and the locked WASI release build.

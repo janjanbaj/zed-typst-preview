@@ -1,8 +1,9 @@
 # Rust proxy handoff
 
-**Status:** planning only. No Rust proxy implementation has been started.
+**Status:** packet A is implemented. The native crate provides CLI parsing and an LSP frame codec. Running a server session requires the process and routing layers.
 
-- Frozen working baseline: `0a366d87a95971cf7ee81091bbc62bfbf419a595` (`main`).
+- Current behavior baseline: `ecd7898` (`main`), merged into `rust-proxy` in `8710f70`.
+- Original plan and audit baseline: `0a366d8`. See the [baseline update](#baseline-update) before using the older line references.
 - Implementation branch: `rust-proxy`, created from that baseline.
 - Architect/reviewer: the coordinating agent. Implementation agents own only their assigned files.
 - Goal: replace the external Node proxy with a native Rust executable while preserving the existing extension's behavior and measuring memory savings.
@@ -23,4 +24,16 @@ Existing behavior is summarized in [HANDOFF.md](../../HANDOFF.md); user-facing s
 
 A native executable passes the shared behavior tests and the explicit hardening tests; the existing WASM extension can launch it through an opt-in path; real Tinymist checks preserve preview/completion behavior; shutdown leaves no child behind; measured proxy memory improves without material latency regression. Publishing binaries or changing the default launcher is a separate reviewed cutover, not implied by a passing local build.
 
-No changes were pushed as part of preparing this handoff. The plan commit follows the baseline on `rust-proxy`.
+## Baseline update
+
+`673136c` added nested Typst bracket pairing through language configuration and the optional Typst keymap. Pairing belongs to Zed and needs no native proxy changes.
+
+`ecd7898` added three behaviors required for native parity. These requirements supersede older descriptions of completion and diagnostic routing in the packet references.
+
+| Layer | Required behavior and source |
+|---|---|
+| Document / Markdown scanner (B/C) | Normalize whitespace inside closed, nonempty inline dollar math in the render copy. Preserve original source, position offsets, code, header, and display math. See `proxy.mjs:22–75,106–179` at `ecd7898`. Have the renderer accept an optional check-file basename for the include. Share the Markdown region scanner with projections and history. |
+| Completion and history (C/D) | Port the document-local term index and ranking in `math-history.mjs:55–235`. Track current text in both modes, refresh the index after 180 ms, discard it on close, and preserve the current bounds. Generate UTF-16 source edits, deduplicate against Tinymist labels, and handle the history item's resolve marker locally. Preserve upstream defaults and snippets. See `proxy.mjs:181–202,535–561,650–694,773–788`. |
+| Markdown diagnostic mapping (C/D) | Generate the position-preserving check module from the original source. Open a fresh `.zed-math-<sequence>.typ` before sending the preview update that includes it. Close the previous check after that preview update. Clear original Markdown diagnostics on edits/close. Accept diagnostics only from the current module and clamp them to original math ranges. Drop unmapped reports and strip virtual-file related information/data. See `proxy.mjs:213–253,565–614,747–771`. |
+
+Use the current Node suite as the oracle, including `tests/math-history.test.mjs`, `tests/math-history-protocol.test.mjs`, `tests/markdown-diagnostics.test.mjs`, and the expanded Markdown preview tests. Port their observable cases to shared native coverage. The original audit's stale-completion and completion-ID examples describe `0a366d8`; current Node guards completion responses by message kind and document identity. The native two-direction request ledger remains a separate requirement.
